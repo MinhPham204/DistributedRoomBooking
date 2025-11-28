@@ -8,11 +8,22 @@ using System.Text;
 
 namespace BookingServer;
 
+// Trạng thái 1 slot (phòng + ca)
 class SlotState
 {
     public bool IsBusy { get; set; }
     public string? CurrentHolder { get; set; }
     public Queue<(string clientId, NetworkStream stream)> WaitingQueue { get; } = new();
+}
+
+// Dùng để hiển thị lên DataGridView trên UI server
+public class SlotSummary
+{
+    public string RoomId { get; set; } = "";
+    public string SlotId { get; set; } = "";
+    public string Status { get; set; } = "";   // "FREE" / "BUSY"
+    public string Holder { get; set; } = "";   // Client đang giữ (nếu có)
+    public int QueueLength { get; set; }       // Số client đang chờ
 }
 
 class ServerState
@@ -41,6 +52,53 @@ class ServerState
 
     private string MakeKey(string roomId, string slotId) => $"{roomId}::{slotId}";
 
+    // Lấy danh sách summary cho tất cả slot -> hiển thị lên grid
+    public List<SlotSummary> GetAllSlotSummaries()
+    {
+        var result = new List<SlotSummary>();
+
+        lock (_lock)
+        {
+            foreach (var kvp in _slots)
+            {
+                var key = kvp.Key;
+                var slot = kvp.Value;
+
+                var parts = key.Split(new[] { "::" }, StringSplitOptions.None);
+                var roomId = parts[0];
+                var slotId = parts.Length > 1 ? parts[1] : "?";
+
+                result.Add(new SlotSummary
+                {
+                    RoomId = roomId,
+                    SlotId = slotId,
+                    Status = slot.IsBusy ? "BUSY" : "FREE",
+                    Holder = slot.CurrentHolder ?? "",
+                    QueueLength = slot.WaitingQueue.Count
+                });
+            }
+        }
+
+        return result;
+    }
+
+    // Lấy queue cụ thể cho 1 (room, slot) -> hiển thị chi tiết hàng đợi
+    public List<string> GetQueueClients(string roomId, string slotId)
+    {
+        var key = MakeKey(roomId, slotId);
+        lock (_lock)
+        {
+            if (!_slots.TryGetValue(key, out var slot))
+                return new List<string>();
+
+            return slot.WaitingQueue.Select(q => q.clientId).ToList();
+        }
+    }
+
+    // REQUEST: cover
+    // - Case cơ bản
+    // - Tranh chấp
+    // - REQUEST trùng lặp (ALREADY_HOLDER / ALREADY_QUEUED)
     public void HandleRequest(string clientId, string roomId, string slotId, NetworkStream stream, TextWriter log)
     {
         var key = MakeKey(roomId, slotId);
@@ -129,7 +187,7 @@ class ServerState
             {
                 log.WriteLine($"[RELEASE] {clientId} -> {roomId}-{slotId}");
 
-                // Thông báo cho client là đã RELEASE xong (phía UI có thể chuyển về trạng thái "FREE")
+                // Thông báo cho client là đã RELEASE xong
                 if (replyStream != null)
                 {
                     Send(replyStream, $"INFO|RELEASED|{roomId}|{slotId}\n");

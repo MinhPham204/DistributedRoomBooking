@@ -17,6 +17,7 @@ namespace BookingClient
         private Button _btnRequest = null!;
         private Button _btnRelease = null!;
         private TextBox _txtLog = null!;
+        private Label _lblStatus = null!;
 
         private TcpClient? _client;
         private NetworkStream? _stream;
@@ -31,8 +32,9 @@ namespace BookingClient
         private void SetupUi()
         {
             this.Text = "Client - Room Booking";
-            this.Width = 600;
-            this.Height = 400;
+            this.Width = 620;
+            this.Height = 430;
+            this.StartPosition = FormStartPosition.CenterScreen;
 
             Label lblId = new Label { Text = "Client ID:", Left = 10, Top = 10, Width = 70 };
             this.Controls.Add(lblId);
@@ -41,7 +43,7 @@ namespace BookingClient
 
             Label lblIp = new Label { Text = "Server IP:", Left = 210, Top = 10, Width = 70 };
             this.Controls.Add(lblIp);
-            _txtServerIp = new TextBox { Left = 290, Top = 8, Width = 100, Text = "127.0.0.1" };
+            _txtServerIp = new TextBox { Left = 290, Top = 8, Width = 110, Text = "127.0.0.1" };
             this.Controls.Add(_txtServerIp);
 
             _btnConnect = new Button { Text = "Connect", Left = 410, Top = 6, Width = 80 };
@@ -62,21 +64,32 @@ namespace BookingClient
             _cbSlot.SelectedIndex = 0;
             this.Controls.Add(_cbSlot);
 
-            _btnRequest = new Button { Text = "REQUEST", Left = 320, Top = 36, Width = 80 };
+            _btnRequest = new Button { Text = "REQUEST", Left = 320, Top = 36, Width = 90 };
             _btnRequest.Click += BtnRequest_Click;
             this.Controls.Add(_btnRequest);
 
-            _btnRelease = new Button { Text = "RELEASE", Left = 410, Top = 36, Width = 80 };
+            _btnRelease = new Button { Text = "RELEASE", Left = 420, Top = 36, Width = 90 };
             _btnRelease.Click += BtnRelease_Click;
             this.Controls.Add(_btnRelease);
+
+            _lblStatus = new Label
+            {
+                Left = 10,
+                Top = 70,
+                Width = 580,
+                Height = 25,
+                Text = "Status: IDLE (not requested)",
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            this.Controls.Add(_lblStatus);
 
             _txtLog = new TextBox
             {
                 Multiline = true,
                 ScrollBars = ScrollBars.Vertical,
                 Left = 10,
-                Top = 70,
-                Width = 560,
+                Top = 100,
+                Width = 580,
                 Height = 280
             };
             this.Controls.Add(_txtLog);
@@ -93,6 +106,7 @@ namespace BookingClient
                 _stream = _client.GetStream();
                 _connected = true;
                 Log("[CLIENT] Connected to server");
+                SetStatus("CONNECTED", "Connected to server", System.Drawing.Color.LightGreen);
 
                 // đọc data từ server
                 _ = Task.Run(ReadLoopAsync);
@@ -100,6 +114,7 @@ namespace BookingClient
             catch (Exception ex)
             {
                 Log("[ERROR] " + ex.Message);
+                SetStatus("ERROR", ex.Message, System.Drawing.Color.LightCoral);
             }
         }
 
@@ -143,6 +158,7 @@ namespace BookingClient
             {
                 Log("[CLIENT] Disconnected from server");
                 _connected = false;
+                SetStatus("DISCONNECTED", "Disconnected from server", System.Drawing.Color.LightGray);
                 this.Text = "Client - Disconnected";
             }
         }
@@ -165,7 +181,10 @@ namespace BookingClient
                     // GRANT|room|slot
                     if (parts.Length >= 3)
                     {
-                        this.Text = $"Client - GRANTED {parts[1]}-{parts[2]}";
+                        string room = parts[1];
+                        string slot = parts[2];
+                        this.Text = $"Client - GRANTED {room}-{slot}";
+                        SetStatus("GRANTED", $"You are GRANTED {room}-{slot}", System.Drawing.Color.LightGreen);
                     }
                     break;
 
@@ -173,8 +192,11 @@ namespace BookingClient
                     // QUEUED|room|slot|pos
                     if (parts.Length >= 4)
                     {
+                        var room = parts[1];
+                        var slot = parts[2];
                         var posText = parts[3];
                         this.Text = $"Client - QUEUED pos {posText}";
+                        SetStatus("QUEUED", $"Waiting for {room}-{slot} at position {posText}", System.Drawing.Color.Khaki);
                     }
                     break;
 
@@ -186,28 +208,44 @@ namespace BookingClient
                         if (infoType == "ERROR")
                         {
                             // INFO|ERROR|message...
+                            string msgErr = parts.Length >= 3 ? parts[2] : "Unknown error";
                             this.Text = "Client - ERROR";
+                            SetStatus("ERROR", msgErr, System.Drawing.Color.LightCoral);
                         }
                         else if (infoType == "ALREADY_HOLDER" && parts.Length >= 4)
                         {
                             // INFO|ALREADY_HOLDER|room|slot
-                            this.Text = $"Client - GRANTED {parts[2]}-{parts[3]}";
+                            var room = parts[2];
+                            var slot = parts[3];
+                            this.Text = $"Client - GRANTED {room}-{slot}";
+                            SetStatus("GRANTED", $"Already holder of {room}-{slot}", System.Drawing.Color.LightGreen);
                         }
                         else if (infoType == "ALREADY_QUEUED" && parts.Length >= 5)
                         {
                             // INFO|ALREADY_QUEUED|room|slot|pos
+                            var room = parts[2];
+                            var slot = parts[3];
                             var posText = parts[4];
                             this.Text = $"Client - QUEUED pos {posText}";
+                            SetStatus("QUEUED", $"Already queued for {room}-{slot} at position {posText}", System.Drawing.Color.Khaki);
                         }
                         else if (infoType == "CANCELLED" && parts.Length >= 4)
                         {
                             // INFO|CANCELLED|room|slot
                             this.Text = "Client - IDLE (cancelled)";
+                            SetStatus("IDLE", "Request cancelled", System.Drawing.Color.LightGray);
+                        }
+                        else if (infoType == "RELEASEED" && parts.Length >= 4)
+                        {
+                            // typo safety – but trong server là RELEASED
+                            this.Text = "Client - IDLE (released)";
+                            SetStatus("IDLE", "Released", System.Drawing.Color.LightGray);
                         }
                         else if (infoType == "RELEASED" && parts.Length >= 4)
                         {
                             // INFO|RELEASED|room|slot
                             this.Text = "Client - IDLE (released)";
+                            SetStatus("IDLE", "Released", System.Drawing.Color.LightGray);
                         }
                     }
                     break;
@@ -216,7 +254,7 @@ namespace BookingClient
 
         private async void BtnRequest_Click(object? sender, EventArgs e)
         {
-            if (!_connected || _stream == null) { Log("Not connected"); return; }
+            if (!_connected || _stream == null) { Log("Not connected"); SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral); return; }
 
             var clientId = _txtClientId.Text.Trim();
             var room = _cbRoom.SelectedItem?.ToString() ?? "A101";
@@ -226,11 +264,12 @@ namespace BookingClient
             var data = Encoding.UTF8.GetBytes(msg);
             await _stream.WriteAsync(data, 0, data.Length);
             Log("[CLIENT] Sent " + msg.Trim());
+            SetStatus("WAITING", $"REQUEST sent for {room}-{slot}", System.Drawing.Color.LightYellow);
         }
 
         private async void BtnRelease_Click(object? sender, EventArgs e)
         {
-            if (!_connected || _stream == null) { Log("Not connected"); return; }
+            if (!_connected || _stream == null) { Log("Not connected"); SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral); return; }
 
             var clientId = _txtClientId.Text.Trim();
             var room = _cbRoom.SelectedItem?.ToString() ?? "A101";
@@ -240,6 +279,7 @@ namespace BookingClient
             var data = Encoding.UTF8.GetBytes(msg);
             await _stream.WriteAsync(data, 0, data.Length);
             Log("[CLIENT] Sent " + msg.Trim());
+            // Status sẽ được cập nhật khi nhận INFO|RELEASED hoặc CANCELLED từ server
         }
 
         private void Log(string text)
@@ -251,6 +291,20 @@ namespace BookingClient
             }
 
             _txtLog.AppendText(text + Environment.NewLine);
+            _txtLog.SelectionStart = _txtLog.Text.Length;
+            _txtLog.ScrollToCaret();
+        }
+
+        private void SetStatus(string shortStatus, string detail, System.Drawing.Color backColor)
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke(new Action<string, string, System.Drawing.Color>(SetStatus), shortStatus, detail, backColor);
+                return;
+            }
+
+            _lblStatus.Text = $"Status: {shortStatus} - {detail}";
+            _lblStatus.BackColor = backColor;
         }
     }
 }
