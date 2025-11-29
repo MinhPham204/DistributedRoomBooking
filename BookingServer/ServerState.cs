@@ -1,5 +1,4 @@
 // BookingServer/ServerState.cs
-// BookingServer/ServerState.cs
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -14,6 +13,10 @@ class SlotState
 {
     public bool IsBusy { get; set; }
     public string? CurrentHolderClientId { get; set; }   // ai đang giữ slot này
+
+    // NEW: Booking tương ứng với slot này (nếu đã tạo record Booking)
+    public Guid? CurrentBookingId { get; set; }
+
     public Queue<(string clientId, NetworkStream stream)> WaitingQueue { get; } = new();
 }
 
@@ -49,6 +52,27 @@ class ServerState
     private readonly object _lock = new();
 
     private string _currentDateKey = DateTime.Today.ToString("yyyy-MM-dd");
+      // ===== DATA MÔ HÌNH THỰC TẾ (ROOMS / USERS / BOOKINGS) =====
+
+    // Thông tin phòng (RoomInfo) key theo RoomId (A08, A16,...)
+    private readonly Dictionary<string, RoomInfo> _rooms = new();
+
+    // Thông tin người dùng (UserInfo) key theo UserId (sv001, gv001, admin,...)
+    private readonly Dictionary<string, UserInfo> _users = new();
+
+    // Danh sách booking "thực tế" – sẽ dùng ở các milestone sau
+    private readonly List<Booking> _bookings = new();
+
+    // Expose read-only cho UI/logic khác (dùng ở milestone sau)
+    public IReadOnlyDictionary<string, RoomInfo> RoomsInfo => _rooms;
+    public IReadOnlyDictionary<string, UserInfo> UsersInfo => _users;
+    public IReadOnlyList<Booking> Bookings => _bookings;
+
+    // Constructor: seed dữ liệu demo
+    public ServerState()
+    {
+        InitDemoData();
+    }
 
     // Cập nhật ngày hiện tại từ UI server
     public void SetCurrentDate(DateTime date, TextWriter log)
@@ -59,6 +83,80 @@ class ServerState
             _currentDateKey = key;
             EnsureDateInitialized(key, log);
         }
+    }
+
+    /// Seed dữ liệu demo cho Rooms / Users.
+    private void InitDemoData()
+    {
+        // Seed phòng từ mảng Rooms có sẵn
+        foreach (var roomId in Rooms)
+        {
+            if (_rooms.ContainsKey(roomId)) continue;
+
+            _rooms[roomId] = new RoomInfo
+            {
+                RoomId = roomId,
+                Building = "CS1 - Tòa A",           // demo, sau này có thể tách theo cơ sở
+                Capacity = 60,                      // demo
+                HasProjector = true,                // giả sử phòng nào cũng có máy chiếu
+                HasPC = roomId.StartsWith("A2", StringComparison.OrdinalIgnoreCase),
+                HasAirConditioner = true,
+                HasMic = roomId.StartsWith("A3", StringComparison.OrdinalIgnoreCase),
+                Status = "ACTIVE"
+            };
+        }
+
+        // Seed một vài user demo (Student / Lecturer / Staff)
+        if (_users.Count == 0)
+        {
+            _users["sv001"] = new UserInfo
+            {
+                UserId = "sv001",
+                UserType = "Student",
+                FullName = "Nguyễn Văn A",
+                StudentId = "N21DCCN001",
+                Class = "D21CQCN01-N",
+                Department = "CNTT",
+                Email = "sv001@example.com",
+                Phone = "0900000001"
+            };
+
+            _users["sv002"] = new UserInfo
+            {
+                UserId = "sv002",
+                UserType = "Student",
+                FullName = "Trần Thị B",
+                StudentId = "N21DCCN002",
+                Class = "D21CQCN02-N",
+                Department = "CNTT",
+                Email = "sv002@example.com",
+                Phone = "0900000002"
+            };
+
+            _users["gv001"] = new UserInfo
+            {
+                UserId = "gv001",
+                UserType = "Lecturer",
+                FullName = "Thầy C",
+                LecturerId = "GV001",
+                Faculty = "Khoa CNTT",
+                Email = "gv001@example.com",
+                Phone = "0900000003"
+            };
+
+            _users["admin"] = new UserInfo
+            {
+                UserId = "admin",
+                UserType = "Staff",                  // dùng như Admin hệ thống
+                FullName = "Phòng Đào Tạo",
+                Department = "Phòng Đào Tạo",
+                Email = "admin@example.com",
+                Phone = "0900000004"
+            };
+        }
+
+        // _bookings: hiện tại để rỗng,
+        // sẽ được thêm record khi GRANT/RELEASE ở Milestone 3.
     }
 
     private void EnsureDateInitialized(string dateKey, TextWriter log)
