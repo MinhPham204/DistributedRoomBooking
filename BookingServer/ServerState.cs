@@ -1,4 +1,5 @@
 // BookingServer/ServerState.cs
+// BookingServer/ServerState.cs
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -12,15 +13,16 @@ namespace BookingServer;
 class SlotState
 {
     public bool IsBusy { get; set; }
-    public string? CurrentHolder { get; set; }
+    public string? CurrentHolderClientId { get; set; }   // ai đang giữ slot này
     public Queue<(string clientId, NetworkStream stream)> WaitingQueue { get; } = new();
 }
 
 // Dùng để hiển thị lên DataGridView trên UI server
 public class SlotSummary
 {
+    public string Date { get; set; } = "";
     public string RoomId { get; set; } = "";
-    public string SlotId { get; set; } = "";
+    public string SlotId { get; set; } = "";   // "S1" .. "S14"
     public string Status { get; set; } = "";   // "FREE" / "BUSY"
     public string Holder { get; set; } = "";   // Client đang giữ (nếu có)
     public int QueueLength { get; set; }       // Số client đang chờ
@@ -28,38 +30,82 @@ public class SlotSummary
 
 class ServerState
 {
-    private readonly Dictionary<string, SlotState> _slots = new();
+    // ===== CẤU HÌNH PHÒNG + CA =====
+    private static readonly string[] Rooms =
+    {
+        "A08","A16","A24","A32",
+        "A21","A22","A23",
+        "A24-A25","A31","A32-A33","A34-A35"
+    };
+
+    private const int SlotCount = 14; // ca 1..14
+
+    // SlotId sẽ là "S1".."S14"
+    private static string GetSlotId(int index) => $"S{index}";
+
+    // ===== STATE THEO NGÀY =====
+    // dateKey = "yyyy-MM-dd" -> (room::slot) -> SlotState
+    private readonly Dictionary<string, Dictionary<string, SlotState>> _slotsByDate = new();
     private readonly object _lock = new();
 
-    public void InitSlots()
-    {
-        var rooms = new[] { "A101", "A102", "B201" };
-        var slots = new[] { "S1", "S2", "S3" }; // S1 = ca 1, S2 = ca 2,...
+    private string _currentDateKey = DateTime.Today.ToString("yyyy-MM-dd");
 
+    // Cập nhật ngày hiện tại từ UI server
+    public void SetCurrentDate(DateTime date, TextWriter log)
+    {
+        var key = date.ToString("yyyy-MM-dd");
         lock (_lock)
         {
-            foreach (var r in rooms)
-            foreach (var s in slots)
+            _currentDateKey = key;
+            EnsureDateInitialized(key, log);
+        }
+    }
+
+    private void EnsureDateInitialized(string dateKey, TextWriter log)
+    {
+        if (_slotsByDate.ContainsKey(dateKey)) return;
+
+        var dict = new Dictionary<string, SlotState>();
+        foreach (var room in Rooms)
+        {
+            for (int i = 1; i <= SlotCount; i++)
             {
-                _slots[$"{r}::{s}"] = new SlotState
+                var slotId = GetSlotId(i);
+                var key = MakeKey(room, slotId);
+                dict[key] = new SlotState
                 {
                     IsBusy = false,
-                    CurrentHolder = null
+                    CurrentHolderClientId = null
                 };
             }
+        }
+
+        _slotsByDate[dateKey] = dict;
+        log.WriteLine($"[INIT] Created slot state for date {dateKey}");
+    }
+
+    private Dictionary<string, SlotState> GetCurrentDateSlots(TextWriter log)
+    {
+        lock (_lock)
+        {
+            EnsureDateInitialized(_currentDateKey, log);
+            return _slotsByDate[_currentDateKey];
         }
     }
 
     private string MakeKey(string roomId, string slotId) => $"{roomId}::{slotId}";
 
-    // Lấy danh sách summary cho tất cả slot -> hiển thị lên grid
+    // Lấy danh sách summary cho tất cả slot của ngày hiện tại -> hiển thị lên grid
     public List<SlotSummary> GetAllSlotSummaries()
     {
         var result = new List<SlotSummary>();
 
         lock (_lock)
         {
-            foreach (var kvp in _slots)
+            if (!_slotsByDate.TryGetValue(_currentDateKey, out var dict))
+                return result;
+
+            foreach (var kvp in dict)
             {
                 var key = kvp.Key;
                 var slot = kvp.Value;
@@ -70,10 +116,11 @@ class ServerState
 
                 result.Add(new SlotSummary
                 {
+                    Date = _currentDateKey,
                     RoomId = roomId,
                     SlotId = slotId,
                     Status = slot.IsBusy ? "BUSY" : "FREE",
-                    Holder = slot.CurrentHolder ?? "",
+                    Holder = slot.CurrentHolderClientId ?? "",
                     QueueLength = slot.WaitingQueue.Count
                 });
             }
@@ -82,45 +129,128 @@ class ServerState
         return result;
     }
 
-    // Lấy queue cụ thể cho 1 (room, slot) -> hiển thị chi tiết hàng đợi
+    // Lấy queue cụ thể cho 1 (room, slot) của ngày hiện tại -> hiển thị chi tiết hàng đợi
     public List<string> GetQueueClients(string roomId, string slotId)
     {
         var key = MakeKey(roomId, slotId);
         lock (_lock)
         {
-            if (!_slots.TryGetValue(key, out var slot))
+            if (!_slotsByDate.TryGetValue(_currentDateKey, out var dict))
+                return new List<string>();
+
+            if (!dict.TryGetValue(key, out var slot))
                 return new List<string>();
 
             return slot.WaitingQueue.Select(q => q.clientId).ToList();
         }
     }
 
+    // Chuyển "S3" -> index 3
+    private int ParseSlotIndex(string slotId)
+    {
+        if (slotId.StartsWith("S", StringComparison.OrdinalIgnoreCase))
+        {
+            if (int.TryParse(slotId.Substring(1), out int idx))
+                return idx;
+        }
+        return -1;
+    }
+
+    // Tính giờ kết thúc ca (dùng cho mode RealTime)
+    // Giả sử ca 1: 07:00-08:00, ca 2: 08:00-09:00, ... ca 14: 20:00-21:00
+    private DateTime GetSlotEndTime(string dateKey, string slotId)
+    {
+        var date = DateTime.Parse(dateKey); // yyyy-MM-dd
+        int idx = ParseSlotIndex(slotId);
+        if (idx <= 0) idx = 1;
+        var start = date.Date.AddHours(7 + (idx - 1)); // ca1 = 7h
+        var end = start.AddHours(1);
+        return end;
+    }
+
+    // Kiểm tra cùng client có đang giữ slot trùng ca ở phòng khác hay không
+    private bool HasCrossRoomConflict(string clientId, string dateKey, string roomIdNew, string slotIdNew,
+        out string conflictedRoom)
+    {
+        conflictedRoom = "";
+        if (!_slotsByDate.TryGetValue(dateKey, out var dict)) return false;
+
+        int idxNew = ParseSlotIndex(slotIdNew);
+        if (idxNew <= 0) return false;
+
+        foreach (var kvp in dict)
+        {
+            var key = kvp.Key;
+            var slot = kvp.Value;
+
+            if (slot.CurrentHolderClientId != clientId) continue;
+
+            var parts = key.Split(new[] { "::" }, StringSplitOptions.None);
+            var roomId = parts[0];
+            var slotId = parts.Length > 1 ? parts[1] : "?";
+
+            if (roomId == roomIdNew) continue; // cùng phòng thì cho phép (đang xin ca khác trong cùng phòng)
+
+            int idx = ParseSlotIndex(slotId);
+            if (idx == idxNew)
+            {
+                conflictedRoom = roomId;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     // REQUEST: cover
     // - Case cơ bản
     // - Tranh chấp
     // - REQUEST trùng lặp (ALREADY_HOLDER / ALREADY_QUEUED)
+    // - Không cho giữ 2 phòng khác nhau cùng ca (theo clientId) trong cùng ngày
+    // - Không cho đặt ca đã qua (RealTime)
     public void HandleRequest(string clientId, string roomId, string slotId, NetworkStream stream, TextWriter log)
     {
-        var key = MakeKey(roomId, slotId);
-
         lock (_lock)
         {
-            if (!_slots.TryGetValue(key, out var slot))
+            EnsureDateInitialized(_currentDateKey, log);
+
+            var dict = _slotsByDate[_currentDateKey];
+            var key = MakeKey(roomId, slotId);
+
+            if (!dict.TryGetValue(key, out var slot))
             {
                 log.WriteLine($"[WARN] REQUEST invalid slot {roomId}-{slotId} by {clientId}");
                 Send(stream, "INFO|ERROR|Invalid room/slot\n");
                 return;
             }
 
-            // Nếu client đã là holder -> không cấp lại, chỉ báo INFO
-            if (slot.CurrentHolder == clientId)
+            // 1) Chặn ca đã qua (mode RealTime đơn giản)
+            var now = DateTime.Now;
+            var endTime = GetSlotEndTime(_currentDateKey, slotId);
+            if (endTime <= now)
+            {
+                log.WriteLine($"[WARN] REQUEST past slot {roomId}-{slotId} on date {_currentDateKey} by {clientId}");
+                Send(stream, "INFO|ERROR|Slot already in the past\n");
+                return;
+            }
+
+            // 2) Chặn giữ 2 phòng khác nhau cùng ca trong cùng ngày
+            if (HasCrossRoomConflict(clientId, _currentDateKey, roomId, slotId, out var conflictedRoom))
+            {
+                log.WriteLine($"[WARN] REQUEST cross-room conflict: {clientId} already holds {conflictedRoom}-{slotId} on {_currentDateKey}");
+                Send(stream, "INFO|ERROR|User already booked another room in that time range\n");
+                return;
+            }
+
+            // 3) Nếu client đã là holder -> không cấp lại, chỉ báo INFO
+            if (slot.CurrentHolderClientId == clientId)
             {
                 log.WriteLine($"[INFO] REQUEST from holder {clientId} on {roomId}-{slotId} -> already granted");
                 Send(stream, $"INFO|ALREADY_HOLDER|{roomId}|{slotId}\n");
                 return;
             }
 
-            // Nếu client đã trong queue -> không enqueue thêm, chỉ báo INFO + pos
+            // 4) Nếu client đã trong queue -> không enqueue thêm, chỉ báo INFO + pos
             int pos = 1;
             bool alreadyQueued = false;
             foreach (var w in slot.WaitingQueue)
@@ -140,13 +270,13 @@ class ServerState
                 return;
             }
 
-            // Slot đang rảnh -> cấp quyền ngay
-            if (!slot.IsBusy && string.IsNullOrEmpty(slot.CurrentHolder))
+            // 5) Slot đang rảnh -> cấp quyền ngay
+            if (!slot.IsBusy && string.IsNullOrEmpty(slot.CurrentHolderClientId))
             {
                 slot.IsBusy = true;
-                slot.CurrentHolder = clientId;
+                slot.CurrentHolderClientId = clientId;
 
-                log.WriteLine($"[GRANT] {clientId} -> {roomId}-{slotId}");
+                log.WriteLine($"[GRANT] {clientId} -> {roomId}-{slotId} on date {_currentDateKey}");
                 Send(stream, $"GRANT|{roomId}|{slotId}\n");
             }
             else
@@ -154,7 +284,7 @@ class ServerState
                 // Slot đang bận -> cho vào queue (FIFO)
                 slot.WaitingQueue.Enqueue((clientId, stream));
                 var newPos = slot.WaitingQueue.Count;
-                log.WriteLine($"[QUEUE] {clientId} -> {roomId}-{slotId} (pos {newPos})");
+                log.WriteLine($"[QUEUE] {clientId} -> {roomId}-{slotId} on date {_currentDateKey} (pos {newPos})");
                 Send(stream, $"QUEUED|{roomId}|{slotId}|{newPos}\n");
             }
         }
@@ -168,11 +298,13 @@ class ServerState
     /// </summary>
     public void HandleRelease(string clientId, string roomId, string slotId, NetworkStream? replyStream, TextWriter log)
     {
-        var key = MakeKey(roomId, slotId);
-
         lock (_lock)
         {
-            if (!_slots.TryGetValue(key, out var slot))
+            EnsureDateInitialized(_currentDateKey, log);
+            var dict = _slotsByDate[_currentDateKey];
+            var key = MakeKey(roomId, slotId);
+
+            if (!dict.TryGetValue(key, out var slot))
             {
                 log.WriteLine($"[WARN] RELEASE invalid slot {roomId}-{slotId} by {clientId}");
                 if (replyStream != null)
@@ -183,9 +315,9 @@ class ServerState
             }
 
             // Trường hợp client đang là holder -> RELEASE hợp lệ
-            if (slot.CurrentHolder == clientId)
+            if (slot.CurrentHolderClientId == clientId)
             {
-                log.WriteLine($"[RELEASE] {clientId} -> {roomId}-{slotId}");
+                log.WriteLine($"[RELEASE] {clientId} -> {roomId}-{slotId} on {_currentDateKey}");
 
                 // Thông báo cho client là đã RELEASE xong
                 if (replyStream != null)
@@ -196,15 +328,15 @@ class ServerState
                 if (slot.WaitingQueue.Count == 0)
                 {
                     slot.IsBusy = false;
-                    slot.CurrentHolder = null;
-                    log.WriteLine($"[SLOT] {roomId}-{slotId} -> FREE");
+                    slot.CurrentHolderClientId = null;
+                    log.WriteLine($"[SLOT] {roomId}-{slotId} on {_currentDateKey} -> FREE");
                 }
                 else
                 {
                     var (nextClientId, nextStream) = slot.WaitingQueue.Dequeue();
                     slot.IsBusy = true;
-                    slot.CurrentHolder = nextClientId;
-                    log.WriteLine($"[GRANT] {nextClientId} (from queue) -> {roomId}-{slotId}");
+                    slot.CurrentHolderClientId = nextClientId;
+                    log.WriteLine($"[GRANT] {nextClientId} (from queue) -> {roomId}-{slotId} on {_currentDateKey}");
                     Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
                 }
 
@@ -215,7 +347,7 @@ class ServerState
             int removed = RemoveFromQueue(slot, clientId);
             if (removed > 0)
             {
-                log.WriteLine($"[CANCEL] {clientId} removed from queue of {roomId}-{slotId} (entries {removed})");
+                log.WriteLine($"[CANCEL] {clientId} removed from queue of {roomId}-{slotId} on {_currentDateKey} (entries {removed})");
                 if (replyStream != null)
                 {
                     Send(replyStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
@@ -224,7 +356,7 @@ class ServerState
             else
             {
                 // Không giữ quyền, không nằm trong queue -> từ chối
-                log.WriteLine($"[WARN] RELEASE from non-holder/non-queued {clientId} on {roomId}-{slotId}");
+                log.WriteLine($"[WARN] RELEASE from non-holder/non-queued {clientId} on {roomId}-{slotId} on {_currentDateKey}");
                 if (replyStream != null)
                 {
                     Send(replyStream, "INFO|ERROR|Not holder or queued\n");
@@ -242,40 +374,46 @@ class ServerState
     {
         lock (_lock)
         {
-            foreach (var kvp in _slots)
+            foreach (var dateEntry in _slotsByDate)
             {
-                var key = kvp.Key;
-                var slot = kvp.Value;
+                var dateKey = dateEntry.Key;
+                var dict = dateEntry.Value;
 
-                var parts = key.Split(new[] { "::" }, StringSplitOptions.None);
-                var roomId = parts[0];
-                var slotId = parts.Length > 1 ? parts[1] : "?";
-
-                // Xóa khỏi queue nếu có
-                int removedFromQueue = RemoveFromQueue(slot, clientId);
-                if (removedFromQueue > 0)
+                foreach (var kvp in dict)
                 {
-                    log.WriteLine($"[DISCONNECT] Removed {clientId} from queue of {roomId}-{slotId} (removed {removedFromQueue})");
-                }
+                    var key = kvp.Key;
+                    var slot = kvp.Value;
 
-                // Nếu đang là holder -> auto release
-                if (slot.CurrentHolder == clientId)
-                {
-                    log.WriteLine($"[DISCONNECT] Auto release {clientId} from {roomId}-{slotId}");
+                    var parts = key.Split(new[] { "::" }, StringSplitOptions.None);
+                    var roomId = parts[0];
+                    var slotId = parts.Length > 1 ? parts[1] : "?";
 
-                    if (slot.WaitingQueue.Count == 0)
+                    // Xóa khỏi queue nếu có
+                    int removedFromQueue = RemoveFromQueue(slot, clientId);
+                    if (removedFromQueue > 0)
                     {
-                        slot.IsBusy = false;
-                        slot.CurrentHolder = null;
-                        log.WriteLine($"[SLOT] {roomId}-{slotId} -> FREE (disconnect)");
+                        log.WriteLine($"[DISCONNECT] Removed {clientId} from queue of {roomId}-{slotId} on {dateKey} (removed {removedFromQueue})");
                     }
-                    else
+
+                    // Nếu đang là holder -> auto release
+                    if (slot.CurrentHolderClientId == clientId)
                     {
-                        var (nextClientId, nextStream) = slot.WaitingQueue.Dequeue();
-                        slot.IsBusy = true;
-                        slot.CurrentHolder = nextClientId;
-                        log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId}");
-                        Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+                        log.WriteLine($"[DISCONNECT] Auto release {clientId} from {roomId}-{slotId} on {dateKey}");
+
+                        if (slot.WaitingQueue.Count == 0)
+                        {
+                            slot.IsBusy = false;
+                            slot.CurrentHolderClientId = null;
+                            log.WriteLine($"[SLOT] {roomId}-{slotId} on {dateKey} -> FREE (disconnect)");
+                        }
+                        else
+                        {
+                            var (nextClientId, nextStream) = slot.WaitingQueue.Dequeue();
+                            slot.IsBusy = true;
+                            slot.CurrentHolderClientId = nextClientId;
+                            log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId} on {dateKey}");
+                            Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+                        }
                     }
                 }
             }

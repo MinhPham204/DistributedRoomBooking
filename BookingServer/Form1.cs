@@ -1,4 +1,5 @@
 // BookingServer/Form1.cs
+// BookingServer/Form1.cs
 using System;
 using System.IO;
 using System.Net;
@@ -16,6 +17,7 @@ public partial class Form1 : Form
     private Label _lblQueueTitle = null!;
     private ListBox _lstQueue = null!;
     private TextBox _txtLog = null!;
+    private DateTimePicker _dtDate = null!;   // CHỌN NGÀY
 
     private TcpListener? _listener;
     private bool _running = false;
@@ -25,7 +27,8 @@ public partial class Form1 : Form
     {
         InitializeComponent();
         SetupUi();
-        _state.InitSlots();
+        // mặc định dùng ngày hôm nay
+        _state.SetCurrentDate(DateTime.Today, new UiLogger(this));
         RefreshSlotsSafe();
     }
 
@@ -33,7 +36,7 @@ public partial class Form1 : Form
     {
         this.Text = "Server - Centralized Mutual Exclusion";
         this.Width = 900;
-        this.Height = 550;
+        this.Height = 580;
         this.StartPosition = FormStartPosition.CenterScreen;
 
         _btnStart = new Button
@@ -47,13 +50,25 @@ public partial class Form1 : Form
         _btnStart.Click += BtnStart_Click;
         this.Controls.Add(_btnStart);
 
+        // Date picker chọn ngày
+        _dtDate = new DateTimePicker
+        {
+            Left = 150,
+            Top = 10,
+            Width = 200,
+            Format = DateTimePickerFormat.Custom,
+            CustomFormat = "yyyy-MM-dd"
+        };
+        _dtDate.ValueChanged += DtDate_ValueChanged;
+        this.Controls.Add(_dtDate);
+
         // Bảng tổng quan slot
         _gridSlots = new DataGridView
         {
             Left = 10,
             Top = 50,
             Width = 400,
-            Height = 450,
+            Height = 480,
             ReadOnly = true,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
@@ -90,9 +105,15 @@ public partial class Form1 : Form
             Left = 420,
             Top = 240,
             Width = 450,
-            Height = 260
+            Height = 290
         };
         this.Controls.Add(_txtLog);
+    }
+
+    private void DtDate_ValueChanged(object? sender, EventArgs e)
+    {
+        _state.SetCurrentDate(_dtDate.Value.Date, new UiLogger(this));
+        RefreshSlotsSafe();
     }
 
     private async void BtnStart_Click(object? sender, EventArgs e)
@@ -243,7 +264,7 @@ public partial class Form1 : Form
         var roomId = summary.RoomId;
         var slotId = summary.SlotId;
 
-        _lblQueueTitle.Text = $"Queue for: {roomId}-{slotId}";
+        _lblQueueTitle.Text = $"Queue for: {summary.Date} - {roomId}-{slotId}";
 
         var clients = _state.GetQueueClients(roomId, slotId);
 

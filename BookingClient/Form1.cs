@@ -52,15 +52,24 @@ namespace BookingClient
 
             Label lblRoom = new Label { Text = "Room:", Left = 10, Top = 40, Width = 50 };
             this.Controls.Add(lblRoom);
-            _cbRoom = new ComboBox { Left = 70, Top = 38, Width = 80, DropDownStyle = ComboBoxStyle.DropDownList };
-            _cbRoom.Items.AddRange(new object[] { "A101", "A102", "B201" });
+            _cbRoom = new ComboBox { Left = 70, Top = 38, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            _cbRoom.Items.AddRange(new object[]
+            {
+                "A08","A16","A24","A32",
+                "A21","A22","A23",
+                "A24-A25","A31","A32-A33","A34-A35"
+            });
             _cbRoom.SelectedIndex = 0;
             this.Controls.Add(_cbRoom);
 
-            Label lblSlot = new Label { Text = "Slot:", Left = 170, Top = 40, Width = 40 };
+            Label lblSlot = new Label { Text = "Ca:", Left = 210, Top = 40, Width = 40 };
             this.Controls.Add(lblSlot);
-            _cbSlot = new ComboBox { Left = 220, Top = 38, Width = 80, DropDownStyle = ComboBoxStyle.DropDownList };
-            _cbSlot.Items.AddRange(new object[] { "S1", "S2", "S3" });
+            _cbSlot = new ComboBox { Left = 250, Top = 38, Width = 60, DropDownStyle = ComboBoxStyle.DropDownList };
+            // 14 ca: hiển thị "1".."14" nhưng gửi S1..S14
+            for (int i = 1; i <= 14; i++)
+            {
+                _cbSlot.Items.Add(i.ToString());
+            }
             _cbSlot.SelectedIndex = 0;
             this.Controls.Add(_cbSlot);
 
@@ -232,7 +241,7 @@ namespace BookingClient
                         else if (infoType == "CANCELLED" && parts.Length >= 4)
                         {
                             // INFO|CANCELLED|room|slot
-                            this.Text = "Client - IDLE (cancelled)";
+                            this.Text = "Client - IDLE (cancelled)";  
                             SetStatus("IDLE", "Request cancelled", System.Drawing.Color.LightGray);
                         }
                         else if (infoType == "RELEASEED" && parts.Length >= 4)
@@ -254,28 +263,40 @@ namespace BookingClient
 
         private async void BtnRequest_Click(object? sender, EventArgs e)
         {
-            if (!_connected || _stream == null) { Log("Not connected"); SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral); return; }
+            if (!_connected || _stream == null)
+            {
+                Log("Not connected");
+                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+                return;
+            }
 
             var clientId = _txtClientId.Text.Trim();
-            var room = _cbRoom.SelectedItem?.ToString() ?? "A101";
-            var slot = _cbSlot.SelectedItem?.ToString() ?? "S1";
+            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+            var slotNumber = _cbSlot.SelectedItem?.ToString() ?? "1";
+            var slotId = "S" + slotNumber;
 
-            var msg = $"REQUEST|{clientId}|{room}|{slot}\n";
+            var msg = $"REQUEST|{clientId}|{room}|{slotId}\n";
             var data = Encoding.UTF8.GetBytes(msg);
             await _stream.WriteAsync(data, 0, data.Length);
             Log("[CLIENT] Sent " + msg.Trim());
-            SetStatus("WAITING", $"REQUEST sent for {room}-{slot}", System.Drawing.Color.LightYellow);
+            SetStatus("WAITING", $"REQUEST sent for {room}-{slotId}", System.Drawing.Color.LightYellow);
         }
 
         private async void BtnRelease_Click(object? sender, EventArgs e)
         {
-            if (!_connected || _stream == null) { Log("Not connected"); SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral); return; }
+            if (!_connected || _stream == null)
+            {
+                Log("Not connected");
+                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+                return;
+            }
 
             var clientId = _txtClientId.Text.Trim();
-            var room = _cbRoom.SelectedItem?.ToString() ?? "A101";
-            var slot = _cbSlot.SelectedItem?.ToString() ?? "S1";
+            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+            var slotNumber = _cbSlot.SelectedItem?.ToString() ?? "1";
+            var slotId = "S" + slotNumber;
 
-            var msg = $"RELEASE|{clientId}|{room}|{slot}\n";
+            var msg = $"RELEASE|{clientId}|{room}|{slotId}\n";
             var data = Encoding.UTF8.GetBytes(msg);
             await _stream.WriteAsync(data, 0, data.Length);
             Log("[CLIENT] Sent " + msg.Trim());
