@@ -45,13 +45,38 @@ namespace BookingServer
         public string UserId { get; set; } = "";
         public string RoomId { get; set; } = "";
         public string Date { get; set; } = "";        // yyyy-MM-dd
+        public string SlotId { get; set; } = "";     // SINGLE-slot legacy
+
         public string SlotStartId { get; set; } = ""; // S1
         public string SlotEndId { get; set; } = "";   // S1 (range sau)
+        public bool IsRangeBooking { get; set; }       // true nếu là range 
         public string Purpose { get; set; } = "";
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
 
         // REQUESTED / APPROVED / REJECTED / CANCELLED / COMPLETED / NO_SHOW
         public string Status { get; set; } = "APPROVED";
+
+        // === M4: admin check-in + deadline ===
+        public DateTime? CheckinTime { get; set; }
+        public DateTime CheckinDeadline { get; set; }
     }
+
+    public class BookingView
+    {
+        public Guid BookingId { get; set; }
+        public string UserId { get; set; } = "";
+        public string FullName { get; set; } = "";
+        public string UserType { get; set; } = "";
+
+        public string RoomId { get; set; } = "";
+        public string Date { get; set; } = "";
+        public string SlotStartId { get; set; } = "";
+        public string SlotEndId { get; set; } = "";
+        public string Status { get; set; } = "";
+
+        public DateTime CreatedAt { get; set; }
+        public DateTime UpdatedAt { get; set; }
+    }
+
 }

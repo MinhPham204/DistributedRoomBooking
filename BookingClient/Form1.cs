@@ -20,12 +20,18 @@ namespace BookingClient
         private Button _btnRelease = null!;
         private TextBox _txtLog = null!;
         private Label _lblStatus = null!;
+        private ComboBox _cbSlotStart = null!;
+        private ComboBox _cbSlotEnd = null!;
+        private Button _btnRequestRange = null!;
+        private Button _btnReleaseRange = null!;   // NEW
 
         private TcpClient? _client;
         private NetworkStream? _stream;
         private bool _connected = false;
         private string? _currentUserId;
         private string? _currentUserType;
+        private TextBox _txtForceUserId = null!;
+        private Button _btnForceGrant = null!;
         public Form1()
         {
             InitializeComponent();
@@ -35,85 +41,207 @@ namespace BookingClient
         private void SetupUi()
         {
             this.Text = "Client - Room Booking";
-            this.Width = 620;
-            this.Height = 430;
+            this.Width = 700;
+            this.Height = 520;
             this.StartPosition = FormStartPosition.CenterScreen;
 
-            Label lblId = new Label { Text = "User ID:", Left = 10, Top = 10, Width = 70 };
-            this.Controls.Add(lblId);
-            _txtUserId = new TextBox { Left = 80, Top = 8, Width = 100, Text = "sv001" };
-            this.Controls.Add(_txtUserId);
+            // ===== Group 1: connection + login =====
+            var grpConn = new GroupBox
+            {
+                Text = "Connection & Login",
+                Left = 10,
+                Top = 10,
+                Width = 660,
+                Height = 80
+            };
+            this.Controls.Add(grpConn);
 
-            Label lblPwd = new Label { Text = "Password:", Left = 190, Top = 10, Width = 70 };
-            this.Controls.Add(lblPwd);
-            _txtPassword = new TextBox { Left = 260, Top = 8, Width = 100, UseSystemPasswordChar = true, Text = "123456" };
-            this.Controls.Add(_txtPassword);
-
-            Label lblIp = new Label { Text = "Server IP:", Left = 370, Top = 10, Width = 70 };
-            this.Controls.Add(lblIp);
-            _txtServerIp = new TextBox { Left = 440, Top = 8, Width = 110, Text = "127.0.0.1" };
-            this.Controls.Add(_txtServerIp);
-
-            _btnConnect = new Button { Text = "Connect", Left = 410, Top = 6, Width = 80 };
+            var lblIp = new Label { Text = "Server IP:", Left = 10, Top = 30, Width = 70 };
+            _txtServerIp = new TextBox { Left = 80, Top = 27, Width = 110, Text = "127.0.0.1" };
+            _btnConnect = new Button { Text = "Connect", Left = 200, Top = 25, Width = 80 };
             _btnConnect.Click += BtnConnect_Click;
-            this.Controls.Add(_btnConnect);
 
-            var btnLogin = new Button { Text = "Login", Left = 100, Top = 38, Width = 80 };
+            var lblUser = new Label { Text = "User ID:", Left = 300, Top = 30, Width = 60 };
+            _txtUserId = new TextBox { Left = 360, Top = 27, Width = 80, Text = "sv001" };
+
+            var lblPwd = new Label { Text = "Password:", Left = 450, Top = 30, Width = 70 };
+            _txtPassword = new TextBox
+            {
+                Left = 520,
+                Top = 27,
+                Width = 80,
+                UseSystemPasswordChar = true,
+                Text = "sv123"
+            };
+            var btnLogin = new Button { Text = "Login", Left = 605, Top = 25, Width = 50 };
             btnLogin.Click += BtnLogin_Click;
-            this.Controls.Add(btnLogin);
 
-            Label lblRoom = new Label { Text = "Room:", Left = 10, Top = 40, Width = 50 };
-            this.Controls.Add(lblRoom);
-            _cbRoom = new ComboBox { Left = 70, Top = 38, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+            grpConn.Controls.AddRange(new Control[]
+            {
+        lblIp, _txtServerIp, _btnConnect,
+        lblUser, _txtUserId,
+        lblPwd, _txtPassword,
+        btnLogin
+            });
+
+            // ===== Group 2: booking request =====
+            var grpRequest = new GroupBox
+            {
+                Text = "Booking Request",
+                Left = 10,
+                Top = 100,
+                Width = 660,
+                Height = 100    // tăng lên cho đủ chỗ
+            };
+            this.Controls.Add(grpRequest);
+
+            var lblRoom = new Label { Text = "Room:", Left = 10, Top = 30, Width = 50 };
+            _cbRoom = new ComboBox
+            {
+                Left = 65,
+                Top = 27,
+                Width = 130,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
             _cbRoom.Items.AddRange(new object[]
             {
-                "A08","A16","A24","A32",
-                "A21","A22","A23",
-                "A24-A25","A31","A32-A33","A34-A35"
+    "A08","A16","A24","A32",
+    "A21","A22","A23",
+    "A24-A25","A31","A32-A33","A34-A35"
             });
             _cbRoom.SelectedIndex = 0;
-            this.Controls.Add(_cbRoom);
 
-            Label lblSlot = new Label { Text = "Ca:", Left = 210, Top = 40, Width = 40 };
-            this.Controls.Add(lblSlot);
-            _cbSlot = new ComboBox { Left = 250, Top = 38, Width = 60, DropDownStyle = ComboBoxStyle.DropDownList };
-            // 14 ca: hiển thị "1".."14" nhưng gửi S1..S14
+            var lblSlot = new Label { Text = "Ca:", Left = 220, Top = 30, Width = 30 };
+            _cbSlot = new ComboBox
+            {
+                Left = 250,
+                Top = 27,
+                Width = 60,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
             for (int i = 1; i <= 14; i++)
             {
                 _cbSlot.Items.Add(i.ToString());
             }
             _cbSlot.SelectedIndex = 0;
-            this.Controls.Add(_cbSlot);
 
-            _btnRequest = new Button { Text = "REQUEST", Left = 320, Top = 36, Width = 90, Enabled = false };
+            _btnRequest = new Button { Text = "REQUEST", Left = 330, Top = 25, Width = 100, Enabled = false };
             _btnRequest.Click += BtnRequest_Click;
-            this.Controls.Add(_btnRequest);
 
-            _btnRelease = new Button { Text = "RELEASE", Left = 420, Top = 36, Width = 90, Enabled = false };
+            _btnRelease = new Button { Text = "RELEASE", Left = 440, Top = 25, Width = 100, Enabled = false };
             _btnRelease.Click += BtnRelease_Click;
-            this.Controls.Add(_btnRelease);
 
+            // NEW: range controls
+            var lblRange = new Label { Text = "Range:", Left = 10, Top = 65, Width = 50 };
+            _cbSlotStart = new ComboBox
+            {
+                Left = 65,
+                Top = 62,
+                Width = 60,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            _cbSlotEnd = new ComboBox
+            {
+                Left = 135,
+                Top = 62,
+                Width = 60,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            for (int i = 1; i <= 14; i++)
+            {
+                _cbSlotStart.Items.Add(i.ToString());
+                _cbSlotEnd.Items.Add(i.ToString());
+            }
+            _cbSlotStart.SelectedIndex = 0;
+            _cbSlotEnd.SelectedIndex = 0;
+
+            _btnRequestRange = new Button
+            {
+                Text = "REQUEST RANGE",
+                Left = 220,
+                Top = 60,
+                Width = 150,
+                Enabled = false       // sẽ bật sau khi login OK
+            };
+            _btnRequestRange.Click += BtnRequestRange_Click;
+
+            _btnReleaseRange = new Button
+            {
+                Text = "RELEASE RANGE",
+                Left = 380,          // đặt ngay bên phải REQUEST RANGE
+                Top = 60,
+                Width = 150,
+                Enabled = false
+            };
+            _btnReleaseRange.Click += BtnReleaseRange_Click;
+
+            grpRequest.Controls.AddRange(new Control[]
+            {
+    lblRoom, _cbRoom,
+    lblSlot, _cbSlot,
+    _btnRequest, _btnRelease,
+    lblRange, _cbSlotStart, _cbSlotEnd, _btnRequestRange,_btnReleaseRange
+            });
+
+
+            // ===== Group 3: admin tools =====
+            var grpAdmin = new GroupBox
+            {
+                Text = "Admin tools",
+                Left = 10,
+                Top = 180,
+                Width = 660,
+                Height = 60
+            };
+            this.Controls.Add(grpAdmin);
+
+            var lblForceUser = new Label { Text = "Force user:", Left = 10, Top = 28, Width = 70 };
+            _txtForceUserId = new TextBox { Left = 85, Top = 25, Width = 120, Text = "sv001" };
+            _btnForceGrant = new Button
+            {
+                Text = "Force GRANT (Admin)",
+                Left = 215,
+                Top = 23,
+                Width = 160,
+                Enabled = false
+            };
+            _btnForceGrant.Click += BtnForceGrant_Click;
+
+            grpAdmin.Controls.AddRange(new Control[]
+            {
+        lblForceUser, _txtForceUserId, _btnForceGrant
+            });
+
+            // ===== Status bar =====
             _lblStatus = new Label
             {
                 Left = 10,
-                Top = 70,
-                Width = 580,
+                Top = 250,
+                Width = 660,
                 Height = 25,
                 Text = "Status: IDLE (not requested)",
                 BorderStyle = BorderStyle.FixedSingle
             };
             this.Controls.Add(_lblStatus);
 
+            // ===== Log =====
+            var grpLog = new GroupBox
+            {
+                Text = "Client log",
+                Left = 10,
+                Top = 285,
+                Width = 660,
+                Height = 190
+            };
+            this.Controls.Add(grpLog);
+
             _txtLog = new TextBox
             {
                 Multiline = true,
                 ScrollBars = ScrollBars.Vertical,
-                Left = 10,
-                Top = 100,
-                Width = 580,
-                Height = 280
+                Dock = DockStyle.Fill
             };
-            this.Controls.Add(_txtLog);
+            grpLog.Controls.Add(_txtLog);
         }
 
         private async void BtnConnect_Click(object? sender, EventArgs e)
@@ -137,6 +265,40 @@ namespace BookingClient
                 Log("[ERROR] " + ex.Message);
                 SetStatus("ERROR", ex.Message, System.Drawing.Color.LightCoral);
             }
+        }
+        private async void BtnForceGrant_Click(object? sender, EventArgs e)
+        {
+            if (!_connected || _stream == null)
+            {
+                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(_currentUserId) ||
+                string.IsNullOrEmpty(_currentUserType) ||
+                (_currentUserType != "Staff" && _currentUserType != "Admin"))
+            {
+                SetStatus("ERROR", "Chỉ Admin/Staff mới dùng FORCE_GRANT", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var targetUserId = _txtForceUserId.Text.Trim();
+            if (string.IsNullOrWhiteSpace(targetUserId))
+            {
+                SetStatus("ERROR", "Target UserId không được trống", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+            var slotNumber = _cbSlot.SelectedItem?.ToString() ?? "1";
+            var slotId = "S" + slotNumber;
+
+            var msg = $"FORCE_GRANT|{_currentUserId}|{targetUserId}|{room}|{slotId}\n";
+            var data = Encoding.UTF8.GetBytes(msg);
+            await _stream.WriteAsync(data, 0, data.Length);
+
+            Log("[CLIENT] Sent " + msg.Trim());
+            SetStatus("WAITING", $"FORCE_GRANT sent for {targetUserId} {room}-{slotId}", System.Drawing.Color.LightYellow);
         }
 
         private async void BtnLogin_Click(object? sender, EventArgs e)
@@ -235,6 +397,19 @@ namespace BookingClient
                     }
                     break;
 
+                case "GRANT_RANGE":
+                    // GRANT_RANGE|room|slotStart|slotEnd
+                    if (parts.Length >= 4)
+                    {
+                        var room = parts[1];
+                        var sStart = parts[2];
+                        var sEnd = parts[3];
+
+                        this.Text = $"Client - GRANTED RANGE {room} {sStart}-{sEnd}";
+                        SetStatus("GRANTED", $"Granted {room} {sStart}-{sEnd}", System.Drawing.Color.LightGreen);
+                    }
+                    break;
+
                 case "QUEUED":
                     // QUEUED|room|slot|pos
                     if (parts.Length >= 4)
@@ -262,7 +437,20 @@ namespace BookingClient
 
                             _btnRequest.Enabled = true;
                             _btnRelease.Enabled = true;
+                            _btnRequestRange.Enabled = true;   // NEW
+                            _btnReleaseRange.Enabled = true;
+
+                            // CHỈ ADMIN / STAFF mới bật FORCE_GRANT
+                            if (userType == "Staff" || userType == "Admin")
+                            {
+                                _btnForceGrant.Enabled = true;
+                            }
+                            else
+                            {
+                                _btnForceGrant.Enabled = false;
+                            }
                         }
+
                         else if (infoType == "LOGIN_FAIL" && parts.Length >= 3)
                         {
                             var reason = parts[2];
@@ -274,6 +462,9 @@ namespace BookingClient
 
                             _btnRequest.Enabled = false;
                             _btnRelease.Enabled = false;
+                            _btnRequestRange.Enabled = false;
+                            _btnReleaseRange.Enabled = false;
+                            _btnForceGrant.Enabled = false;
                         }
                         else if (infoType == "ERROR")
                         {
@@ -317,6 +508,28 @@ namespace BookingClient
                             this.Text = "Client - IDLE (released)";
                             SetStatus("IDLE", "Released", System.Drawing.Color.LightGray);
                         }
+                        else if (infoType == "FORCE_GRANTED" && parts.Length >= 5)
+                        {
+                            var targetUser = parts[2];
+                            var room = parts[3];
+                            var slot = parts[4];
+
+                            this.Text = $"Client - FORCE_GRANTED {targetUser} {room}-{slot}";
+                            SetStatus("FORCE_GRANTED",
+                                $"Admin granted {room}-{slot} to {targetUser}",
+                                System.Drawing.Color.LightGreen);
+                        }
+
+                        else if (infoType == "RANGE_RELEASED" && parts.Length >= 5)
+                        {
+                            var room = parts[2];
+                            var sStart = parts[3];
+                            var sEnd = parts[4];
+
+                            this.Text = "Client - IDLE (range released)";
+                            SetStatus("IDLE", $"Released range {room} {sStart}-{sEnd}",
+                                System.Drawing.Color.LightGray);
+                        }
                     }
                     break;
             }
@@ -347,6 +560,97 @@ namespace BookingClient
             await _stream.WriteAsync(data, 0, data.Length);
             Log("[CLIENT] Sent " + msg.Trim());
             SetStatus("WAITING", $"REQUEST sent for {room}-{slotId}", System.Drawing.Color.LightYellow);
+        }
+        private async void BtnRequestRange_Click(object? sender, EventArgs e)
+        {
+            if (!_connected || _stream == null)
+            {
+                Log("Not connected");
+                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(_currentUserId))
+            {
+                SetStatus("ERROR", "Bạn cần đăng nhập trước khi REQUEST_RANGE", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var clientId = _currentUserId;
+            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+
+            var slotStartNum = _cbSlotStart.SelectedItem?.ToString() ?? "1";
+            var slotEndNum = _cbSlotEnd.SelectedItem?.ToString() ?? "1";
+
+            if (!int.TryParse(slotStartNum, out var sStart) ||
+                !int.TryParse(slotEndNum, out var sEnd))
+            {
+                SetStatus("ERROR", "Slot start/end không hợp lệ", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            if (sStart > sEnd)
+            {
+                SetStatus("ERROR", "SlotStart phải <= SlotEnd", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var slotStartId = "S" + sStart;
+            var slotEndId = "S" + sEnd;
+
+            var msg = $"REQUEST_RANGE|{clientId}|{room}|{slotStartId}|{slotEndId}\n";
+            var data = Encoding.UTF8.GetBytes(msg);
+            await _stream.WriteAsync(data, 0, data.Length);
+
+            Log("[CLIENT] Sent " + msg.Trim());
+            SetStatus("WAITING", $"REQUEST_RANGE sent for {room} {slotStartId}-{slotEndId}", System.Drawing.Color.LightYellow);
+
+        }
+        private async void BtnReleaseRange_Click(object? sender, EventArgs e)
+        {
+            if (!_connected || _stream == null)
+            {
+                Log("Not connected");
+                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            if (string.IsNullOrEmpty(_currentUserId))
+            {
+                SetStatus("ERROR", "Bạn cần đăng nhập trước khi RELEASE_RANGE", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var clientId = _currentUserId;
+            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+
+            var slotStartNum = _cbSlotStart.SelectedItem?.ToString() ?? "1";
+            var slotEndNum = _cbSlotEnd.SelectedItem?.ToString() ?? "1";
+
+            if (!int.TryParse(slotStartNum, out var sStart) ||
+                !int.TryParse(slotEndNum, out var sEnd))
+            {
+                SetStatus("ERROR", "Slot start/end không hợp lệ", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            if (sStart > sEnd)
+            {
+                SetStatus("ERROR", "SlotStart phải <= SlotEnd", System.Drawing.Color.LightCoral);
+                return;
+            }
+
+            var slotStartId = "S" + sStart;
+            var slotEndId = "S" + sEnd;
+
+            var msg = $"RELEASE_RANGE|{clientId}|{room}|{slotStartId}|{slotEndId}\n";
+            var data = Encoding.UTF8.GetBytes(msg);
+            await _stream.WriteAsync(data, 0, data.Length);
+
+            Log("[CLIENT] Sent " + msg.Trim());
+            SetStatus("WAITING",
+                $"RELEASE_RANGE sent for {room} {slotStartId}-{slotEndId}",
+                System.Drawing.Color.LightYellow);
         }
 
         private async void BtnRelease_Click(object? sender, EventArgs e)
