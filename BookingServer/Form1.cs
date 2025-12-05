@@ -34,8 +34,8 @@ public partial class Form1 : Form
     private Button _btnLockEvent = null!;
     private Button _btnUnlockEvent = null!;
     private TextBox _txtForceUserId = null!;
-private Button _btnForceGrant = null!;
-private Button _btnForceRelease = null!;
+    private Button _btnForceGrant = null!;
+    private Button _btnForceRelease = null!;
     public Form1()
     {
         InitializeComponent();
@@ -46,12 +46,23 @@ private Button _btnForceRelease = null!;
         _noShowTimer.Tick += NoShowTimer_Tick;
         _noShowTimer.Start();
 
-        // mặc định dùng ngày hôm nay
-        _state.SetCurrentDate(DateTime.Today, new UiLogger(this));
+        var logger = new UiLogger(this);
+        var snapshotPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "state.json");
+
+        // 1) Load snapshot nếu có
+        _state.LoadSnapshotIfExists(snapshotPath, logger);
+
+        // 2) Đảm bảo current date = hôm nay và đã có slots cho hôm nay
+        _state.SetCurrentDate(DateTime.Today, logger);
+
+        // 3) Refresh grid
         RefreshSlotsSafe();
-        // _gridSlots.SelectionChanged += GridSlots_SelectionChanged;
+
+        // 🔹 Lưu snapshot khi đóng form
+        this.FormClosing += Form1_FormClosing;
 
     }
+
 
     private void SetupUi()
     {
@@ -339,46 +350,46 @@ private Button _btnForceRelease = null!;
         _btnUnlockEvent.Click += BtnUnlockEvent_Click;
         _grpCheckin.Controls.Add(_btnUnlockEvent);
 
-// ===== Admin override (Force GRANT / RELEASE) =====
-var lblForceUser = new Label
-{
-    Left = 10,
-    Top = 140,
-    Width = 80,
-    Text = "Force user:"
-};
-_grpCheckin.Controls.Add(lblForceUser);
+        // ===== Admin override (Force GRANT / RELEASE) =====
+        var lblForceUser = new Label
+        {
+            Left = 10,
+            Top = 140,
+            Width = 80,
+            Text = "Force user:"
+        };
+        _grpCheckin.Controls.Add(lblForceUser);
 
-_txtForceUserId = new TextBox
-{
-    Left = 90,
-    Top = 140,
-    Width = 140
-};
-_grpCheckin.Controls.Add(_txtForceUserId);
+        _txtForceUserId = new TextBox
+        {
+            Left = 90,
+            Top = 140,
+            Width = 140
+        };
+        _grpCheckin.Controls.Add(_txtForceUserId);
 
-_btnForceGrant = new Button
-{
-    Left = 240,
-    Top = 140,
-    Width = 120,
-    Text = "Force GRANT"
-};
-_btnForceGrant.Click += BtnForceGrant_Click;
-_grpCheckin.Controls.Add(_btnForceGrant);
+        _btnForceGrant = new Button
+        {
+            Left = 240,
+            Top = 140,
+            Width = 120,
+            Text = "Force GRANT"
+        };
+        _btnForceGrant.Click += BtnForceGrant_Click;
+        _grpCheckin.Controls.Add(_btnForceGrant);
 
-_btnForceRelease = new Button
-{
-    Left = 370,
-    Top = 140,
-    Width = 120,
-    Text = "Force RELEASE"
-};
-_btnForceRelease.Click += BtnForceRelease_Click;
-_grpCheckin.Controls.Add(_btnForceRelease);
+        _btnForceRelease = new Button
+        {
+            Left = 370,
+            Top = 140,
+            Width = 120,
+            Text = "Force RELEASE"
+        };
+        _btnForceRelease.Click += BtnForceRelease_Click;
+        _grpCheckin.Controls.Add(_btnForceRelease);
 
-// tăng chiều cao group một chút cho đủ chỗ
-_grpCheckin.Height = 165;
+        // tăng chiều cao group một chút cho đủ chỗ
+        _grpCheckin.Height = 165;
 
     }
 
@@ -511,42 +522,42 @@ _grpCheckin.Height = 165;
                             RefreshSlotsSafe();
                             break;
 
-                        case "FORCE_GRANT":
-                            // EXPECT: FORCE_GRANT|adminId|targetUserId|roomId|slotId
-                            if (parts.Length != 5)
-                            {
-                                await SendAsync(stream, "INFO|ERROR|Invalid FORCE_GRANT format\n");
-                                break;
-                            }
+                        // case "FORCE_GRANT":
+                        //     // EXPECT: FORCE_GRANT|adminId|targetUserId|roomId|slotId
+                        //     if (parts.Length != 5)
+                        //     {
+                        //         await SendAsync(stream, "INFO|ERROR|Invalid FORCE_GRANT format\n");
+                        //         break;
+                        //     }
 
-                            if (clientId == null)
-                            {
-                                await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
-                                break;
-                            }
+                        //     if (clientId == null)
+                        //     {
+                        //         await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
+                        //         break;
+                        //     }
 
-                            var adminId = parts[1];
-                            var targetUserId = parts[2];
-                            var fgRoomId = parts[3];
-                            var fgSlotId = parts[4];
+                        //     var adminId = parts[1];
+                        //     var targetUserId = parts[2];
+                        //     var fgRoomId = parts[3];
+                        //     var fgSlotId = parts[4];
 
-                            // connection này phải đúng adminId đã login
-                            if (!string.Equals(clientId, adminId, StringComparison.OrdinalIgnoreCase))
-                            {
-                                await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                break;
-                            }
+                        //     // connection này phải đúng adminId đã login
+                        //     if (!string.Equals(clientId, adminId, StringComparison.OrdinalIgnoreCase))
+                        //     {
+                        //         await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                        //         break;
+                        //     }
 
-                            // check quyền admin
-                            if (!_state.IsAdmin(adminId))
-                            {
-                                await SendAsync(stream, "INFO|ERROR|NOT_ADMIN\n");
-                                break;
-                            }
+                        //     // check quyền admin
+                        //     if (!_state.IsAdmin(adminId))
+                        //     {
+                        //         await SendAsync(stream, "INFO|ERROR|NOT_ADMIN\n");
+                        //         break;
+                        //     }
 
-                            _state.HandleForceGrant(adminId, targetUserId, fgRoomId, fgSlotId, stream, new UiLogger(this));
-                            RefreshSlotsSafe();
-                            break;
+                        //     _state.HandleForceGrant(adminId, targetUserId, fgRoomId, fgSlotId, stream, new UiLogger(this));
+                        //     RefreshSlotsSafe();
+                        //     break;
                         case "REQUEST_RANGE":
                             {
                                 if (clientId == null)
@@ -824,154 +835,154 @@ _grpCheckin.Height = 165;
         RefreshSlotsSafe();
         UpdateCheckinPanel();
     }
-private void BtnLockEvent_Click(object? sender, EventArgs e)
-{
-    if (_gridSlots.CurrentRow == null)
+    private void BtnLockEvent_Click(object? sender, EventArgs e)
     {
-        MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
-            "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
+        if (_gridSlots.CurrentRow == null)
+        {
+            MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
+                "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var row = _gridSlots.CurrentRow;
+        var roomId = row.Cells["RoomId"].Value?.ToString();
+        var slotId = row.Cells["SlotId"].Value?.ToString();
+
+        if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+        {
+            MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+                "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var date = _dtDate.Value.Date;
+        var note = _txtEventNote.Text.Trim();
+        var logger = new UiLogger(this);
+
+        if (!_state.LockSlotForEvent(date, roomId, slotId, note, logger, out var error))
+        {
+            MessageBox.Show(this, error, "Lock for Event thất bại",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Log($"[UI] Locked {roomId}-{slotId} on {date:yyyy-MM-dd} for event. Note='{note}'");
+        RefreshSlotsSafe();
+        UpdateCheckinPanel();
     }
 
-    var row = _gridSlots.CurrentRow;
-    var roomId = row.Cells["RoomId"].Value?.ToString();
-    var slotId = row.Cells["SlotId"].Value?.ToString();
-
-    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+    private void BtnUnlockEvent_Click(object? sender, EventArgs e)
     {
-        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.", 
-            "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
+        if (_gridSlots.CurrentRow == null)
+        {
+            MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
+                "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var row = _gridSlots.CurrentRow;
+        var roomId = row.Cells["RoomId"].Value?.ToString();
+        var slotId = row.Cells["SlotId"].Value?.ToString();
+
+        if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+        {
+            MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+                "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var date = _dtDate.Value.Date;
+        var logger = new UiLogger(this);
+
+        if (!_state.UnlockSlotFromEvent(date, roomId, slotId, logger, out var error))
+        {
+            MessageBox.Show(this, error, "Unlock Event thất bại",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Log($"[UI] Unlocked event at {roomId}-{slotId} on {date:yyyy-MM-dd}");
+        RefreshSlotsSafe();
+        UpdateCheckinPanel();
     }
 
-    var date = _dtDate.Value.Date;
-    var note = _txtEventNote.Text.Trim();
-    var logger = new UiLogger(this);
-
-    if (!_state.LockSlotForEvent(date, roomId, slotId, note, logger, out var error))
+    private void BtnForceGrant_Click(object? sender, EventArgs e)
     {
-        MessageBox.Show(this, error, "Lock for Event thất bại",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
+        if (_gridSlots.CurrentRow == null)
+        {
+            MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
+                "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var row = _gridSlots.CurrentRow;
+        var roomId = row.Cells["RoomId"].Value?.ToString();
+        var slotId = row.Cells["SlotId"].Value?.ToString();
+
+        if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+        {
+            MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+                "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var targetUserId = _txtForceUserId.Text.Trim();
+        if (string.IsNullOrEmpty(targetUserId))
+        {
+            MessageBox.Show(this, "Target UserId không được trống.",
+                "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var date = _dtDate.Value.Date;
+        var logger = new UiLogger(this);
+
+        if (!_state.ForceGrantFromServerUi(date, roomId, slotId, targetUserId, logger, out var error))
+        {
+            MessageBox.Show(this, error, "Force GRANT failed",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Log($"[ADMIN-UI] Force GRANT {targetUserId} -> {roomId}-{slotId} ({date:yyyy-MM-dd})");
+        RefreshSlotsSafe();
+        UpdateCheckinPanel();
     }
 
-    Log($"[UI] Locked {roomId}-{slotId} on {date:yyyy-MM-dd} for event. Note='{note}'");
-    RefreshSlotsSafe();
-    UpdateCheckinPanel();
-}
-
-private void BtnUnlockEvent_Click(object? sender, EventArgs e)
-{
-    if (_gridSlots.CurrentRow == null)
+    private void BtnForceRelease_Click(object? sender, EventArgs e)
     {
-        MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
-            "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
+        if (_gridSlots.CurrentRow == null)
+        {
+            MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
+                "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var row = _gridSlots.CurrentRow;
+        var roomId = row.Cells["RoomId"].Value?.ToString();
+        var slotId = row.Cells["SlotId"].Value?.ToString();
+
+        if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+        {
+            MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+                "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var date = _dtDate.Value.Date;
+        var logger = new UiLogger(this);
+
+        if (!_state.ForceReleaseFromServerUi(date, roomId, slotId, logger, out var error))
+        {
+            MessageBox.Show(this, error, "Force RELEASE failed",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        Log($"[ADMIN-UI] Force RELEASE {roomId}-{slotId} ({date:yyyy-MM-dd})");
+        RefreshSlotsSafe();
+        UpdateCheckinPanel();
     }
-
-    var row = _gridSlots.CurrentRow;
-    var roomId = row.Cells["RoomId"].Value?.ToString();
-    var slotId = row.Cells["SlotId"].Value?.ToString();
-
-    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
-    {
-        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
-            "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var date = _dtDate.Value.Date;
-    var logger = new UiLogger(this);
-
-    if (!_state.UnlockSlotFromEvent(date, roomId, slotId, logger, out var error))
-    {
-        MessageBox.Show(this, error, "Unlock Event thất bại",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    Log($"[UI] Unlocked event at {roomId}-{slotId} on {date:yyyy-MM-dd}");
-    RefreshSlotsSafe();
-    UpdateCheckinPanel();
-}
-
-private void BtnForceGrant_Click(object? sender, EventArgs e)
-{
-    if (_gridSlots.CurrentRow == null)
-    {
-        MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
-            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var row = _gridSlots.CurrentRow;
-    var roomId = row.Cells["RoomId"].Value?.ToString();
-    var slotId = row.Cells["SlotId"].Value?.ToString();
-
-    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
-    {
-        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
-            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var targetUserId = _txtForceUserId.Text.Trim();
-    if (string.IsNullOrEmpty(targetUserId))
-    {
-        MessageBox.Show(this, "Target UserId không được trống.",
-            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var date = _dtDate.Value.Date;
-    var logger = new UiLogger(this);
-
-    if (!_state.ForceGrantFromServerUi(date, roomId, slotId, targetUserId, logger, out var error))
-    {
-        MessageBox.Show(this, error, "Force GRANT failed",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    Log($"[ADMIN-UI] Force GRANT {targetUserId} -> {roomId}-{slotId} ({date:yyyy-MM-dd})");
-    RefreshSlotsSafe();
-    UpdateCheckinPanel();
-}
-
-private void BtnForceRelease_Click(object? sender, EventArgs e)
-{
-    if (_gridSlots.CurrentRow == null)
-    {
-        MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
-            "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var row = _gridSlots.CurrentRow;
-    var roomId = row.Cells["RoomId"].Value?.ToString();
-    var slotId = row.Cells["SlotId"].Value?.ToString();
-
-    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
-    {
-        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
-            "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    var date = _dtDate.Value.Date;
-    var logger = new UiLogger(this);
-
-    if (!_state.ForceReleaseFromServerUi(date, roomId, slotId, logger, out var error))
-    {
-        MessageBox.Show(this, error, "Force RELEASE failed",
-            MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        return;
-    }
-
-    Log($"[ADMIN-UI] Force RELEASE {roomId}-{slotId} ({date:yyyy-MM-dd})");
-    RefreshSlotsSafe();
-    UpdateCheckinPanel();
-}
 
     private void UpdateQueueViewForSelected()
     {
@@ -1049,6 +1060,13 @@ private void BtnForceRelease_Click(object? sender, EventArgs e)
         var data = _state.GetBookingViews();
         var dlg = new BookingListForm(data);
         dlg.Show(this);
+    }
+    private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
+    {
+        var logger = new UiLogger(this);
+        var snapshotPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "state.json");
+
+        _state.SaveSnapshotToFile(snapshotPath, logger);
     }
 
 

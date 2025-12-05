@@ -1,5 +1,6 @@
 // BookingServer/Models.cs
 using System;
+using System.Collections.Generic;
 
 namespace BookingServer
 {
@@ -77,6 +78,58 @@ namespace BookingServer
 
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
+    }
+
+    /// View cho tra cứu lịch 1 phòng trong 1 ngày
+    public class RoomDailySlotView
+    {
+        public string Date { get; set; } = "";         // yyyy-MM-dd
+        public string RoomId { get; set; } = "";
+        public string SlotId { get; set; } = "";       // S1..S14
+        public string TimeRange { get; set; } = "";    // "07:00-08:00" ...
+
+        public string Status { get; set; } = "";       // FREE / BUSY
+        public string UserId { get; set; } = "";
+        public string FullName { get; set; } = "";
+        public string BookingStatus { get; set; } = ""; // APPROVED / IN_USE / COMPLETED / ...
+    }
+
+    /// Thống kê theo phòng
+    public class RoomStats
+    {
+        public string RoomId { get; set; } = "";
+        public int TotalBookings { get; set; }
+        public int NoShowCount { get; set; }
+        public int CancelledCount { get; set; }
+    }
+
+    /// Thống kê theo loại user (Student / Lecturer / Staff)
+    public class UserTypeStats
+    {
+        public string UserType { get; set; } = "";
+        public int TotalBookings { get; set; }
+        public int NoShowCount { get; set; }
+    }
+
+    /// Snapshot dùng cho backup/restore
+    public class SlotSnapshot
+    {
+        public bool IsBusy { get; set; }
+        public string? CurrentHolderClientId { get; set; }
+        public Guid? CurrentBookingId { get; set; }
+        // Optional: nếu muốn lưu luôn lock event
+        public bool IsEventLocked { get; set; }
+        public string? EventNote { get; set; }
+    }
+
+    public class Snapshot
+    {
+        public Dictionary<string, Dictionary<string, SlotSnapshot>> SlotsByDate { get; set; }
+            = new();
+
+        public List<Booking> Bookings { get; set; } = new();
+
+        public Dictionary<string, UserInfo> Users { get; set; } = new();
     }
 
 }

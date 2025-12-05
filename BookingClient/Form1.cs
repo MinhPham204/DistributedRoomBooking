@@ -30,8 +30,8 @@ namespace BookingClient
         private bool _connected = false;
         private string? _currentUserId;
         private string? _currentUserType;
-        private TextBox _txtForceUserId = null!;
-        private Button _btnForceGrant = null!;
+        // private TextBox _txtForceUserId = null!;
+        // private Button _btnForceGrant = null!;
         public Form1()
         {
             InitializeComponent();
@@ -184,33 +184,33 @@ namespace BookingClient
             });
 
 
-        //     // ===== Group 3: admin tools =====
-        //     var grpAdmin = new GroupBox
-        //     {
-        //         Text = "Admin tools",
-        //         Left = 10,
-        //         Top = 180,
-        //         Width = 660,
-        //         Height = 60
-        //     };
-        //     this.Controls.Add(grpAdmin);
+            //     // ===== Group 3: admin tools =====
+            //     var grpAdmin = new GroupBox
+            //     {
+            //         Text = "Admin tools",
+            //         Left = 10,
+            //         Top = 180,
+            //         Width = 660,
+            //         Height = 60
+            //     };
+            //     this.Controls.Add(grpAdmin);
 
-        //     var lblForceUser = new Label { Text = "Force user:", Left = 10, Top = 28, Width = 70 };
-        //     _txtForceUserId = new TextBox { Left = 85, Top = 25, Width = 120, Text = "sv001" };
-        //     _btnForceGrant = new Button
-        //     {
-        //         Text = "Force GRANT (Admin)",
-        //         Left = 215,
-        //         Top = 23,
-        //         Width = 160,
-        //         Enabled = false
-        //     };
-        //     _btnForceGrant.Click += BtnForceGrant_Click;
+            //     var lblForceUser = new Label { Text = "Force user:", Left = 10, Top = 28, Width = 70 };
+            //     _txtForceUserId = new TextBox { Left = 85, Top = 25, Width = 120, Text = "sv001" };
+            //     _btnForceGrant = new Button
+            //     {
+            //         Text = "Force GRANT (Admin)",
+            //         Left = 215,
+            //         Top = 23,
+            //         Width = 160,
+            //         Enabled = false
+            //     };
+            //     _btnForceGrant.Click += BtnForceGrant_Click;
 
-        //     grpAdmin.Controls.AddRange(new Control[]
-        //     {
-        // lblForceUser, _txtForceUserId, _btnForceGrant
-        //     });
+            //     grpAdmin.Controls.AddRange(new Control[]
+            //     {
+            // lblForceUser, _txtForceUserId, _btnForceGrant
+            //     });
 
             // ===== Status bar =====
             _lblStatus = new Label
@@ -266,40 +266,40 @@ namespace BookingClient
                 SetStatus("ERROR", ex.Message, System.Drawing.Color.LightCoral);
             }
         }
-        private async void BtnForceGrant_Click(object? sender, EventArgs e)
-        {
-            if (!_connected || _stream == null)
-            {
-                SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
-                return;
-            }
+        // private async void BtnForceGrant_Click(object? sender, EventArgs e)
+        // {
+        //     if (!_connected || _stream == null)
+        //     {
+        //         SetStatus("ERROR", "Not connected", System.Drawing.Color.LightCoral);
+        //         return;
+        //     }
 
-            if (string.IsNullOrEmpty(_currentUserId) ||
-                string.IsNullOrEmpty(_currentUserType) ||
-                (_currentUserType != "Staff" && _currentUserType != "Admin"))
-            {
-                SetStatus("ERROR", "Chỉ Admin/Staff mới dùng FORCE_GRANT", System.Drawing.Color.LightCoral);
-                return;
-            }
+        //     if (string.IsNullOrEmpty(_currentUserId) ||
+        //         string.IsNullOrEmpty(_currentUserType) ||
+        //         (_currentUserType != "Staff" && _currentUserType != "Admin"))
+        //     {
+        //         SetStatus("ERROR", "Chỉ Admin/Staff mới dùng FORCE_GRANT", System.Drawing.Color.LightCoral);
+        //         return;
+        //     }
 
-            var targetUserId = _txtForceUserId.Text.Trim();
-            if (string.IsNullOrWhiteSpace(targetUserId))
-            {
-                SetStatus("ERROR", "Target UserId không được trống", System.Drawing.Color.LightCoral);
-                return;
-            }
+        //     var targetUserId = _txtForceUserId.Text.Trim();
+        //     if (string.IsNullOrWhiteSpace(targetUserId))
+        //     {
+        //         SetStatus("ERROR", "Target UserId không được trống", System.Drawing.Color.LightCoral);
+        //         return;
+        //     }
 
-            var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
-            var slotNumber = _cbSlot.SelectedItem?.ToString() ?? "1";
-            var slotId = "S" + slotNumber;
+        //     var room = _cbRoom.SelectedItem?.ToString() ?? "A08";
+        //     var slotNumber = _cbSlot.SelectedItem?.ToString() ?? "1";
+        //     var slotId = "S" + slotNumber;
 
-            var msg = $"FORCE_GRANT|{_currentUserId}|{targetUserId}|{room}|{slotId}\n";
-            var data = Encoding.UTF8.GetBytes(msg);
-            await _stream.WriteAsync(data, 0, data.Length);
+        //     var msg = $"FORCE_GRANT|{_currentUserId}|{targetUserId}|{room}|{slotId}\n";
+        //     var data = Encoding.UTF8.GetBytes(msg);
+        //     await _stream.WriteAsync(data, 0, data.Length);
 
-            Log("[CLIENT] Sent " + msg.Trim());
-            SetStatus("WAITING", $"FORCE_GRANT sent for {targetUserId} {room}-{slotId}", System.Drawing.Color.LightYellow);
-        }
+        //     Log("[CLIENT] Sent " + msg.Trim());
+        //     SetStatus("WAITING", $"FORCE_GRANT sent for {targetUserId} {room}-{slotId}", System.Drawing.Color.LightYellow);
+        // }
 
         private async void BtnLogin_Click(object? sender, EventArgs e)
         {
@@ -441,14 +441,14 @@ namespace BookingClient
                             _btnReleaseRange.Enabled = true;
 
                             // CHỈ ADMIN / STAFF mới bật FORCE_GRANT
-                            if (userType == "Staff" || userType == "Admin")
-                            {
-                                _btnForceGrant.Enabled = true;
-                            }
-                            else
-                            {
-                                _btnForceGrant.Enabled = false;
-                            }
+                            // if (userType == "Staff" || userType == "Admin")
+                            // {
+                            //     _btnForceGrant.Enabled = true;
+                            // }
+                            // else
+                            // {
+                            //     _btnForceGrant.Enabled = false;
+                            // }
                         }
 
                         else if (infoType == "LOGIN_FAIL" && parts.Length >= 3)
@@ -464,15 +464,15 @@ namespace BookingClient
                             _btnRelease.Enabled = false;
                             _btnRequestRange.Enabled = false;
                             _btnReleaseRange.Enabled = false;
-                            _btnForceGrant.Enabled = false;
+                            // _btnForceGrant.Enabled = false;
                         }
-                        else if (infoType == "ERROR")
-                        {
-                            // INFO|ERROR|message...
-                            string msgErr = parts.Length >= 3 ? parts[2] : "Unknown error";
-                            this.Text = "Client - ERROR";
-                            SetStatus("ERROR", msgErr, System.Drawing.Color.LightCoral);
-                        }
+                        // else if (infoType == "ERROR")
+                        // {
+                        //     // INFO|ERROR|message...
+                        //     string msgErr = parts.Length >= 3 ? parts[2] : "Unknown error";
+                        //     this.Text = "Client - ERROR";
+                        //     SetStatus("ERROR", msgErr, System.Drawing.Color.LightCoral);
+                        // }
                         else if (infoType == "ALREADY_HOLDER" && parts.Length >= 4)
                         {
                             // INFO|ALREADY_HOLDER|room|slot
@@ -508,17 +508,17 @@ namespace BookingClient
                             this.Text = "Client - IDLE (released)";
                             SetStatus("IDLE", "Released", System.Drawing.Color.LightGray);
                         }
-                        else if (infoType == "FORCE_GRANTED" && parts.Length >= 5)
-                        {
-                            var targetUser = parts[2];
-                            var room = parts[3];
-                            var slot = parts[4];
+                        // else if (infoType == "FORCE_GRANTED" && parts.Length >= 5)
+                        // {
+                        //     var targetUser = parts[2];
+                        //     var room = parts[3];
+                        //     var slot = parts[4];
 
-                            this.Text = $"Client - FORCE_GRANTED {targetUser} {room}-{slot}";
-                            SetStatus("FORCE_GRANTED",
-                                $"Admin granted {room}-{slot} to {targetUser}",
-                                System.Drawing.Color.LightGreen);
-                        }
+                        //     this.Text = $"Client - FORCE_GRANTED {targetUser} {room}-{slot}";
+                        //     SetStatus("FORCE_GRANTED",
+                        //         $"Admin granted {room}-{slot} to {targetUser}",
+                        //         System.Drawing.Color.LightGreen);
+                        // }
 
                         else if (infoType == "RANGE_RELEASED" && parts.Length >= 5)
                         {
@@ -547,6 +547,7 @@ namespace BookingClient
                                 SetStatus("ERROR", msgErr, System.Drawing.Color.LightCoral);
                             }
                         }
+
 
                     }
                     break;

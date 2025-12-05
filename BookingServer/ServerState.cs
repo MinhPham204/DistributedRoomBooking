@@ -7,6 +7,8 @@ using System.Net.Sockets;
 using System.Text;
 using BC = BCrypt.Net.BCrypt;
 using BCryptNet = BCrypt.Net.BCrypt;
+using System.Text.Json;
+
 
 namespace BookingServer;
 
@@ -765,8 +767,8 @@ class ServerState
 
                             slot.CurrentBookingId = newBooking.BookingId;
 
-                            log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId} on {dateKey}");
-                            Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+                            // log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId} on {dateKey}");
+                            // Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
 
 
                             log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId} on {dateKey}");
@@ -989,88 +991,88 @@ class ServerState
         }
     }
 
-// Admin force grant từ UI Server (không đi qua TCP)
-public bool ForceGrantFromServerUi(
-    DateTime date,
-    string roomId,
-    string slotId,
-    string targetUserId,
-    TextWriter log,
-    out string error)
-{
-    error = "";
-    var dateKey = date.ToString("yyyy-MM-dd");
-
-    lock (_lock)
+    // Admin force grant từ UI Server (không đi qua TCP)
+    public bool ForceGrantFromServerUi(
+        DateTime date,
+        string roomId,
+        string slotId,
+        string targetUserId,
+        TextWriter log,
+        out string error)
     {
-        // đảm bảo đã có state cho ngày này
-        EnsureDateInitialized(dateKey, log);
+        error = "";
+        var dateKey = date.ToString("yyyy-MM-dd");
 
-        // 1. Check user
-        if (!_users.TryGetValue(targetUserId, out var targetUser) || !targetUser.IsActive)
+        lock (_lock)
         {
-            error = "User không tồn tại hoặc đang bị khóa.";
-            return false;
-        }
+            // đảm bảo đã có state cho ngày này
+            EnsureDateInitialized(dateKey, log);
 
-        if (!_slotsByDate.TryGetValue(dateKey, out var dict))
-        {
-            error = "Không tìm thấy dữ liệu ngày.";
-            return false;
-        }
-
-        var key = MakeKey(roomId, slotId);
-        if (!dict.TryGetValue(key, out var slot))
-        {
-            error = "Không tìm thấy phòng/ca.";
-            return false;
-        }
-
-        // 2. Không cho user giữ 2 phòng khác nhau cùng ca (giống logic request)
-        if (HasCrossRoomConflict(targetUserId, dateKey, roomId, slotId, out var conflictedRoom))
-        {
-            error = $"User đã giữ phòng {conflictedRoom} ở cùng ca.";
-            return false;
-        }
-
-        // 3. Nếu đang có holder → cancel booking cũ
-        if (slot.CurrentHolderClientId != null)
-        {
-            log.WriteLine($"[ADMIN FORCE_GRANT-UI] override holder {slot.CurrentHolderClientId} on {roomId}-{slotId} ({dateKey})");
-            UpdateCurrentBookingStatus(slot, roomId, slotId, "CANCELLED", log);
-        }
-
-        // 4. Clear queue & báo cho từng client trong queue là bị hủy do admin
-        if (slot.WaitingQueue.Count > 0)
-        {
-            log.WriteLine($"[ADMIN FORCE_GRANT-UI] clear queue {roomId}-{slotId}, count={slot.WaitingQueue.Count}");
-            while (slot.WaitingQueue.Count > 0)
+            // 1. Check user
+            if (!_users.TryGetValue(targetUserId, out var targetUser) || !targetUser.IsActive)
             {
-                var (queuedClientId, queuedStream) = slot.WaitingQueue.Dequeue();
-                // Thông báo: yêu cầu của bạn đã bị admin hủy
-                Send(queuedStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
+                error = "User không tồn tại hoặc đang bị khóa.";
+                return false;
             }
+
+            if (!_slotsByDate.TryGetValue(dateKey, out var dict))
+            {
+                error = "Không tìm thấy dữ liệu ngày.";
+                return false;
+            }
+
+            var key = MakeKey(roomId, slotId);
+            if (!dict.TryGetValue(key, out var slot))
+            {
+                error = "Không tìm thấy phòng/ca.";
+                return false;
+            }
+
+            // 2. Không cho user giữ 2 phòng khác nhau cùng ca (giống logic request)
+            if (HasCrossRoomConflict(targetUserId, dateKey, roomId, slotId, out var conflictedRoom))
+            {
+                error = $"User đã giữ phòng {conflictedRoom} ở cùng ca.";
+                return false;
+            }
+
+            // 3. Nếu đang có holder → cancel booking cũ
+            if (slot.CurrentHolderClientId != null)
+            {
+                log.WriteLine($"[ADMIN FORCE_GRANT-UI] override holder {slot.CurrentHolderClientId} on {roomId}-{slotId} ({dateKey})");
+                UpdateCurrentBookingStatus(slot, roomId, slotId, "CANCELLED", log);
+            }
+
+            // 4. Clear queue & báo cho từng client trong queue là bị hủy do admin
+            if (slot.WaitingQueue.Count > 0)
+            {
+                log.WriteLine($"[ADMIN FORCE_GRANT-UI] clear queue {roomId}-{slotId}, count={slot.WaitingQueue.Count}");
+                while (slot.WaitingQueue.Count > 0)
+                {
+                    var (queuedClientId, queuedStream) = slot.WaitingQueue.Dequeue();
+                    // Thông báo: yêu cầu của bạn đã bị admin hủy
+                    Send(queuedStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
+                }
+            }
+
+            // 5. Gán holder mới + tạo booking mới
+            slot.IsBusy = true;
+            slot.CurrentHolderClientId = targetUserId;
+
+            var booking = CreateBookingForGrant(
+                targetUserId,
+                roomId,
+                dateKey,
+                slotId,   // start == end (single slot)
+                slotId,
+                false,    // IsRangeBooking
+                log);
+
+            slot.CurrentBookingId = booking.BookingId;
+
+            log.WriteLine($"[ADMIN FORCE_GRANT-UI] {targetUserId} -> {roomId}-{slotId} on {dateKey}");
+            return true;
         }
-
-        // 5. Gán holder mới + tạo booking mới
-        slot.IsBusy = true;
-        slot.CurrentHolderClientId = targetUserId;
-
-        var booking = CreateBookingForGrant(
-            targetUserId,
-            roomId,
-            dateKey,
-            slotId,   // start == end (single slot)
-            slotId,
-            false,    // IsRangeBooking
-            log);
-
-        slot.CurrentBookingId = booking.BookingId;
-
-        log.WriteLine($"[ADMIN FORCE_GRANT-UI] {targetUserId} -> {roomId}-{slotId} on {dateKey}");
-        return true;
     }
-}
 
     // Admin check-in tại UI server, không đi qua TCP client
     public void AdminCheckIn(string dateKey, string roomId, string slotId, TextWriter log)
@@ -1576,19 +1578,319 @@ public bool ForceGrantFromServerUi(
             return true;
         }
     }
-// Admin Force RELEASE từ UI Server
-public bool ForceReleaseFromServerUi(
-    DateTime date,
-    string roomId,
-    string slotId,
-    TextWriter log,
-    out string error)
-{
-    // Dùng lại đúng logic CompleteAndReleaseSlot:
-    // - APPROVED  -> CANCELLED
-    // - IN_USE    -> COMPLETED
-    // Đồng thời cấp quyền cho người tiếp theo trong queue.
-    return CompleteAndReleaseSlot(date, roomId, slotId, log, out error);
-}
+    // Admin Force RELEASE từ UI Server
+    public bool ForceReleaseFromServerUi(
+        DateTime date,
+        string roomId,
+        string slotId,
+        TextWriter log,
+        out string error)
+    {
+        // Dùng lại đúng logic CompleteAndReleaseSlot:
+        // - APPROVED  -> CANCELLED
+        // - IN_USE    -> COMPLETED
+        // Đồng thời cấp quyền cho người tiếp theo trong queue.
+        return CompleteAndReleaseSlot(date, roomId, slotId, log, out error);
+    }
+
+        /// Tra cứu lịch 14 ca của 1 phòng trong 1 ngày
+    public List<RoomDailySlotView> GetDailySchedule(DateTime date, string roomId, TextWriter log)
+    {
+        var dateKey = date.ToString("yyyy-MM-dd");
+        var result = new List<RoomDailySlotView>();
+
+        lock (_lock)
+        {
+            EnsureDateInitialized(dateKey, log);
+
+            if (!_slotsByDate.TryGetValue(dateKey, out var dictSlots))
+                return result;
+
+            for (int i = 1; i <= SlotCount; i++)
+            {
+                var slotId = GetSlotId(i);              // "S1".."S14"
+                var key = MakeKey(roomId, slotId);
+
+                dictSlots.TryGetValue(key, out var slotState);
+
+                // Mặc định FREE
+                string status = "FREE";
+                string userId = "";
+                string fullName = "";
+                string bookingStatus = "";
+
+                if (slotState != null)
+                {
+                    if (slotState.IsBusy)
+                    {
+                        status = "BUSY";
+                        if (!string.IsNullOrEmpty(slotState.CurrentHolderClientId))
+                        {
+                            userId = slotState.CurrentHolderClientId;
+                            if (_users.TryGetValue(userId, out var user))
+                            {
+                                fullName = user.FullName;
+                            }
+                        }
+
+                        if (slotState.CurrentBookingId.HasValue)
+                        {
+                            var booking = _bookings
+                                .FirstOrDefault(b => b.BookingId == slotState.CurrentBookingId.Value);
+                            if (booking != null)
+                            {
+                                bookingStatus = booking.Status;
+                            }
+                        }
+                    }
+                }
+
+                // Khung giờ: dùng lại logic GetSlotStartTime / GetSlotEndTime
+                var start = GetSlotStartTime(dateKey, slotId);
+                var end = GetSlotEndTime(dateKey, slotId);
+                var timeRange = $"{start:HH:mm}-{end:HH:mm}";
+
+                result.Add(new RoomDailySlotView
+                {
+                    Date = dateKey,
+                    RoomId = roomId,
+                    SlotId = slotId,
+                    TimeRange = timeRange,
+                    Status = status,
+                    UserId = userId,
+                    FullName = fullName,
+                    BookingStatus = bookingStatus
+                });
+            }
+        }
+
+        return result;
+    }
+    /// Thống kê theo phòng: trong khoảng [fromDate, toDate]
+    public List<RoomStats> GetRoomStatistics(DateTime fromDate, DateTime toDate)
+    {
+        var from = fromDate.Date;
+        var to = toDate.Date;
+
+        lock (_lock)
+        {
+            // Lọc booking theo CreatedAt và khoảng ngày
+            var filtered = _bookings.Where(b =>
+            {
+                var d = DateTime.Parse(b.Date); // b.Date = "yyyy-MM-dd"
+                return d >= from && d <= to;
+            });
+
+            var groups = filtered.GroupBy(b => b.RoomId);
+
+            var result = new List<RoomStats>();
+            foreach (var g in groups)
+            {
+                var roomId = g.Key;
+                var total = g.Count();
+                var noShow = g.Count(x => x.Status == "NO_SHOW");
+                var cancelled = g.Count(x => x.Status == "CANCELLED");
+
+                result.Add(new RoomStats
+                {
+                    RoomId = roomId,
+                    TotalBookings = total,
+                    NoShowCount = noShow,
+                    CancelledCount = cancelled
+                });
+            }
+
+            return result.OrderBy(r => r.RoomId).ToList();
+        }
+    }
+    /// Thống kê theo loại user (Student / Lecturer / Staff)
+    public List<UserTypeStats> GetUserTypeStatistics(DateTime fromDate, DateTime toDate)
+    {
+        var from = fromDate.Date;
+        var to = toDate.Date;
+
+        lock (_lock)
+        {
+            var filtered = _bookings.Where(b =>
+            {
+                var d = DateTime.Parse(b.Date);
+                return d >= from && d <= to;
+            });
+
+            // Join sang _users để lấy UserType
+            var query = filtered
+                .Select(b =>
+                {
+                    _users.TryGetValue(b.UserId, out var user);
+                    var userType = user?.UserType ?? "Unknown";
+                    return new { Booking = b, UserType = userType };
+                });
+
+            var groups = query.GroupBy(x => x.UserType);
+
+            var result = new List<UserTypeStats>();
+            foreach (var g in groups)
+            {
+                var total = g.Count();
+                var noShow = g.Count(x => x.Booking.Status == "NO_SHOW");
+
+                result.Add(new UserTypeStats
+                {
+                    UserType = g.Key,
+                    TotalBookings = total,
+                    NoShowCount = noShow
+                });
+            }
+
+            return result.OrderBy(r => r.UserType).ToList();
+        }
+    }
+    private Snapshot BuildSnapshot()
+    {
+        var snapshot = new Snapshot();
+
+        // SlotsByDate: convert SlotState -> SlotSnapshot
+        foreach (var dateEntry in _slotsByDate)
+        {
+            var dateKey = dateEntry.Key;
+            var dict = dateEntry.Value;
+
+            var dictSnap = new Dictionary<string, SlotSnapshot>();
+            foreach (var kvp in dict)
+            {
+                var key = kvp.Key;
+                var slot = kvp.Value;
+
+                dictSnap[key] = new SlotSnapshot
+                {
+                    IsBusy = slot.IsBusy,
+                    CurrentHolderClientId = slot.CurrentHolderClientId,
+                    CurrentBookingId = slot.CurrentBookingId,
+                    IsEventLocked = slot.IsEventLocked,
+                    EventNote = slot.EventNote
+                };
+            }
+
+            snapshot.SlotsByDate[dateKey] = dictSnap;
+        }
+
+        // Bookings
+        snapshot.Bookings.AddRange(_bookings);
+
+        // Users
+        foreach (var kvp in _users)
+        {
+            snapshot.Users[kvp.Key] = kvp.Value;
+        }
+
+        return snapshot;
+    }
+    public bool SaveSnapshotToFile(string filePath, TextWriter log)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                var snapshot = BuildSnapshot();
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                };
+                var json = JsonSerializer.Serialize(snapshot, options);
+                File.WriteAllText(filePath, json, Encoding.UTF8);
+            }
+
+            log.WriteLine($"[SNAPSHOT] Saved to {filePath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[SNAPSHOT][ERROR] Failed to save: {ex.Message}");
+            return false;
+        }
+    }
+    public bool LoadSnapshotIfExists(string filePath, TextWriter log)
+    {
+        if (!File.Exists(filePath))
+        {
+            log.WriteLine($"[SNAPSHOT] No snapshot file ({filePath}), using demo data.");
+            return false;
+        }
+
+        try
+        {
+            string json = File.ReadAllText(filePath, Encoding.UTF8);
+            var snapshot = JsonSerializer.Deserialize<Snapshot>(json);
+
+            if (snapshot == null)
+                throw new Exception("Snapshot is null");
+
+            lock (_lock)
+            {
+                // Khôi phục slotsByDate
+                _slotsByDate.Clear();
+                foreach (var dateEntry in snapshot.SlotsByDate)
+                {
+                    var dateKey = dateEntry.Key;
+                    var dictSnap = dateEntry.Value;
+
+                    var dictSlots = new Dictionary<string, SlotState>();
+                    foreach (var kvp in dictSnap)
+                    {
+                        var key = kvp.Key;
+                        var snap = kvp.Value;
+
+                        dictSlots[key] = new SlotState
+                        {
+                            IsBusy = snap.IsBusy,
+                            CurrentHolderClientId = snap.CurrentHolderClientId,
+                            CurrentBookingId = snap.CurrentBookingId,
+                            IsEventLocked = snap.IsEventLocked,
+                            EventNote = snap.EventNote
+                        };
+                    }
+
+                    _slotsByDate[dateKey] = dictSlots;
+                }
+
+                // Khôi phục bookings
+                _bookings.Clear();
+                if (snapshot.Bookings != null)
+                    _bookings.AddRange(snapshot.Bookings);
+
+                // Khôi phục users
+                _users.Clear();
+                if (snapshot.Users != null)
+                {
+                    foreach (var kvp in snapshot.Users)
+                    {
+                        _users[kvp.Key] = kvp.Value;
+                    }
+                }
+
+                // Lưu ý: _rooms vẫn giữ nguyên từ InitDemoData (danh sách phòng demo)
+            }
+
+            log.WriteLine($"[SNAPSHOT] Loaded snapshot from {filePath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[SNAPSHOT][ERROR] Failed to load snapshot: {ex.Message}");
+            log.WriteLine("[SNAPSHOT] Fallback to InitDemoData");
+
+            // Fallback: reset demo data
+            lock (_lock)
+            {
+                _slotsByDate.Clear();
+                _bookings.Clear();
+                _users.Clear();
+                InitDemoData();
+            }
+
+            return false;
+        }
+    }
+
 
 }
