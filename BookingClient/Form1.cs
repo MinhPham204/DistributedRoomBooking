@@ -184,33 +184,33 @@ namespace BookingClient
             });
 
 
-            // ===== Group 3: admin tools =====
-            var grpAdmin = new GroupBox
-            {
-                Text = "Admin tools",
-                Left = 10,
-                Top = 180,
-                Width = 660,
-                Height = 60
-            };
-            this.Controls.Add(grpAdmin);
+        //     // ===== Group 3: admin tools =====
+        //     var grpAdmin = new GroupBox
+        //     {
+        //         Text = "Admin tools",
+        //         Left = 10,
+        //         Top = 180,
+        //         Width = 660,
+        //         Height = 60
+        //     };
+        //     this.Controls.Add(grpAdmin);
 
-            var lblForceUser = new Label { Text = "Force user:", Left = 10, Top = 28, Width = 70 };
-            _txtForceUserId = new TextBox { Left = 85, Top = 25, Width = 120, Text = "sv001" };
-            _btnForceGrant = new Button
-            {
-                Text = "Force GRANT (Admin)",
-                Left = 215,
-                Top = 23,
-                Width = 160,
-                Enabled = false
-            };
-            _btnForceGrant.Click += BtnForceGrant_Click;
+        //     var lblForceUser = new Label { Text = "Force user:", Left = 10, Top = 28, Width = 70 };
+        //     _txtForceUserId = new TextBox { Left = 85, Top = 25, Width = 120, Text = "sv001" };
+        //     _btnForceGrant = new Button
+        //     {
+        //         Text = "Force GRANT (Admin)",
+        //         Left = 215,
+        //         Top = 23,
+        //         Width = 160,
+        //         Enabled = false
+        //     };
+        //     _btnForceGrant.Click += BtnForceGrant_Click;
 
-            grpAdmin.Controls.AddRange(new Control[]
-            {
-        lblForceUser, _txtForceUserId, _btnForceGrant
-            });
+        //     grpAdmin.Controls.AddRange(new Control[]
+        //     {
+        // lblForceUser, _txtForceUserId, _btnForceGrant
+        //     });
 
             // ===== Status bar =====
             _lblStatus = new Label
@@ -530,6 +530,24 @@ namespace BookingClient
                             SetStatus("IDLE", $"Released range {room} {sStart}-{sEnd}",
                                 System.Drawing.Color.LightGray);
                         }
+                        else if (infoType == "ERROR" && parts.Length >= 3)
+                        {
+                            string msgErr = parts[2];
+
+                            if (msgErr == "SLOT_LOCKED_FOR_EVENT")
+                            {
+                                this.Text = "Client - Slot locked for event";
+                                SetStatus("LOCKED_FOR_EVENT",
+                                    "Phòng/ca này đã được khóa cho sự kiện.",
+                                    System.Drawing.Color.LightBlue);
+                            }
+                            else
+                            {
+                                this.Text = "Client - ERROR";
+                                SetStatus("ERROR", msgErr, System.Drawing.Color.LightCoral);
+                            }
+                        }
+
                     }
                     break;
             }

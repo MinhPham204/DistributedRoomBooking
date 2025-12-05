@@ -18,6 +18,9 @@ class SlotState
 
     // NEW: Booking tương ứng với slot này (nếu đã tạo record Booking)
     public Guid? CurrentBookingId { get; set; }
+    public bool IsEventLocked { get; set; } = false;
+    // NEW: ghi chú ngắn (ví dụ: "Event Khoa CNTT", "Hội thảo ABC")
+    public string? EventNote { get; set; }
 
     public Queue<(string clientId, NetworkStream stream)> WaitingQueue { get; } = new();
 }
@@ -31,6 +34,8 @@ public class SlotSummary
     public string Status { get; set; } = "";   // "FREE" / "BUSY"
     public string Holder { get; set; } = "";   // Client đang giữ (nếu có)
     public int QueueLength { get; set; }       // Số client đang chờ
+    public bool IsEventLocked { get; set; }
+
 }
 
 class ServerState
@@ -222,14 +227,26 @@ class ServerState
                 var roomId = parts[0];
                 var slotId = parts.Length > 1 ? parts[1] : "?";
 
+                var status = "FREE";
+                if (slot.IsEventLocked)
+                {
+                    // nếu đang lock + có người đang dùng (do admin FORCE_GRANT) -> BUSY_EVT
+                    status = slot.IsBusy ? "BUSY_EVT" : "LOCKED";
+                }
+                else
+                {
+                    status = slot.IsBusy ? "BUSY" : "FREE";
+                }
+
                 result.Add(new SlotSummary
                 {
                     Date = _currentDateKey,
                     RoomId = roomId,
                     SlotId = slotId,
-                    Status = slot.IsBusy ? "BUSY" : "FREE",
+                    Status = status,
                     Holder = slot.CurrentHolderClientId ?? "",
-                    QueueLength = slot.WaitingQueue.Count
+                    QueueLength = slot.WaitingQueue.Count,
+                    IsEventLocked = slot.IsEventLocked
                 });
             }
         }
@@ -271,6 +288,94 @@ class ServerState
                 return new List<string>();
 
             return slot.WaitingQueue.Select(q => q.clientId).ToList();
+        }
+    }
+    public bool LockSlotForEvent(
+        DateTime date,
+        string roomId,
+        string slotId,
+        string? note,
+        TextWriter log,
+        out string error)
+    {
+        error = "";
+        var dateKey = date.ToString("yyyy-MM-dd");
+
+        lock (_lock)
+        {
+            EnsureDateInitialized(dateKey, log);
+
+            if (!_slotsByDate.TryGetValue(dateKey, out var dict))
+            {
+                error = "Không tìm thấy dữ liệu ngày.";
+                return false;
+            }
+
+            var key = MakeKey(roomId, slotId);
+            if (!dict.TryGetValue(key, out var slot))
+            {
+                error = "Không tìm thấy phòng/ca.";
+                return false;
+            }
+
+            // Tùy bạn: có cho lock khi đang bận hay không
+            if (slot.IsBusy)
+            {
+                error = "Slot đang có người sử dụng, hãy giải phóng trước khi lock cho event.";
+                return false;
+            }
+
+            slot.IsEventLocked = true;
+            slot.EventNote = note;
+
+            log.WriteLine($"[EVENT_LOCK] {dateKey} {roomId}-{slotId} note={note}");
+            return true;
+        }
+    }
+
+    public bool UnlockSlotFromEvent(
+        DateTime date,
+        string roomId,
+        string slotId,
+        TextWriter log,
+        out string error)
+    {
+        error = "";
+        var dateKey = date.ToString("yyyy-MM-dd");
+
+        lock (_lock)
+        {
+            if (!_slotsByDate.TryGetValue(dateKey, out var dict))
+            {
+                error = "Không tìm thấy dữ liệu ngày.";
+                return false;
+            }
+
+            var key = MakeKey(roomId, slotId);
+            if (!dict.TryGetValue(key, out var slot))
+            {
+                error = "Không tìm thấy phòng/ca.";
+                return false;
+            }
+
+            if (!slot.IsEventLocked)
+            {
+                error = "Slot này không ở trạng thái lock event.";
+                return false;
+            }
+
+            // chỉ nên unlock khi đang rảnh (không có người giữ)
+            if (slot.IsBusy)
+            {
+                error = "Slot đang có booking, không thể unlock event.";
+                return false;
+            }
+
+            slot.IsEventLocked = false;
+            slot.EventNote = null;
+
+            log.WriteLine($"[EVENT_UNLOCK] {dateKey} {roomId}-{slotId}");
+            return true;
         }
     }
 
@@ -384,6 +489,15 @@ class ServerState
             {
                 log.WriteLine($"[WARN] REQUEST invalid slot {roomId}-{slotId} by {clientId}");
                 Send(stream, "INFO|ERROR|Invalid room/slot\n");
+                return;
+            }
+            bool isAdmin = IsAdmin(clientId);
+
+            // Nếu slot đang khóa cho event -> chỉ admin mới được can thiệp (FORCE_GRANT làm riêng)
+            if (slot.IsEventLocked && !isAdmin)
+            {
+                log.WriteLine($"[WARN] REQUEST blocked by EVENT_LOCK {clientId} on {roomId}-{slotId} {_currentDateKey}");
+                Send(stream, "INFO|ERROR|SLOT_LOCKED_FOR_EVENT\n");
                 return;
             }
 
@@ -875,6 +989,89 @@ class ServerState
         }
     }
 
+// Admin force grant từ UI Server (không đi qua TCP)
+public bool ForceGrantFromServerUi(
+    DateTime date,
+    string roomId,
+    string slotId,
+    string targetUserId,
+    TextWriter log,
+    out string error)
+{
+    error = "";
+    var dateKey = date.ToString("yyyy-MM-dd");
+
+    lock (_lock)
+    {
+        // đảm bảo đã có state cho ngày này
+        EnsureDateInitialized(dateKey, log);
+
+        // 1. Check user
+        if (!_users.TryGetValue(targetUserId, out var targetUser) || !targetUser.IsActive)
+        {
+            error = "User không tồn tại hoặc đang bị khóa.";
+            return false;
+        }
+
+        if (!_slotsByDate.TryGetValue(dateKey, out var dict))
+        {
+            error = "Không tìm thấy dữ liệu ngày.";
+            return false;
+        }
+
+        var key = MakeKey(roomId, slotId);
+        if (!dict.TryGetValue(key, out var slot))
+        {
+            error = "Không tìm thấy phòng/ca.";
+            return false;
+        }
+
+        // 2. Không cho user giữ 2 phòng khác nhau cùng ca (giống logic request)
+        if (HasCrossRoomConflict(targetUserId, dateKey, roomId, slotId, out var conflictedRoom))
+        {
+            error = $"User đã giữ phòng {conflictedRoom} ở cùng ca.";
+            return false;
+        }
+
+        // 3. Nếu đang có holder → cancel booking cũ
+        if (slot.CurrentHolderClientId != null)
+        {
+            log.WriteLine($"[ADMIN FORCE_GRANT-UI] override holder {slot.CurrentHolderClientId} on {roomId}-{slotId} ({dateKey})");
+            UpdateCurrentBookingStatus(slot, roomId, slotId, "CANCELLED", log);
+        }
+
+        // 4. Clear queue & báo cho từng client trong queue là bị hủy do admin
+        if (slot.WaitingQueue.Count > 0)
+        {
+            log.WriteLine($"[ADMIN FORCE_GRANT-UI] clear queue {roomId}-{slotId}, count={slot.WaitingQueue.Count}");
+            while (slot.WaitingQueue.Count > 0)
+            {
+                var (queuedClientId, queuedStream) = slot.WaitingQueue.Dequeue();
+                // Thông báo: yêu cầu của bạn đã bị admin hủy
+                Send(queuedStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
+            }
+        }
+
+        // 5. Gán holder mới + tạo booking mới
+        slot.IsBusy = true;
+        slot.CurrentHolderClientId = targetUserId;
+
+        var booking = CreateBookingForGrant(
+            targetUserId,
+            roomId,
+            dateKey,
+            slotId,   // start == end (single slot)
+            slotId,
+            false,    // IsRangeBooking
+            log);
+
+        slot.CurrentBookingId = booking.BookingId;
+
+        log.WriteLine($"[ADMIN FORCE_GRANT-UI] {targetUserId} -> {roomId}-{slotId} on {dateKey}");
+        return true;
+    }
+}
+
     // Admin check-in tại UI server, không đi qua TCP client
     public void AdminCheckIn(string dateKey, string roomId, string slotId, TextWriter log)
     {
@@ -1029,7 +1226,21 @@ class ServerState
 
                 slots.Add((sid, slotState));
             }
+            bool isAdmin = IsAdmin(clientId);
 
+            // 3b. Nếu bất kỳ slot nào trong range bị lock cho event -> chặn user thường
+            if (!isAdmin)
+            {
+                foreach (var (sid, s) in slots)
+                {
+                    if (s.IsEventLocked)
+                    {
+                        log.WriteLine($"[WARN] REQUEST_RANGE blocked by EVENT_LOCK at {roomId}-{sid} for {clientId}");
+                        Send(stream, "INFO|ERROR|SLOT_LOCKED_FOR_EVENT\n");
+                        return;
+                    }
+                }
+            }
             // 4. Nếu bất kỳ slot nào đang BUSY bởi user khác -> RANGE_CONFLICT (atomic)
             foreach (var (sid, s) in slots)
             {
@@ -1063,85 +1274,85 @@ class ServerState
             Send(stream, $"GRANT_RANGE|{roomId}|{slotStartId}|{slotEndId}\n");
         }
     }
-public void HandleReleaseRange(
-    string clientId,
-    string roomId,
-    string slotStartId,
-    string slotEndId,
-    NetworkStream replyStream,
-    TextWriter log)
-{
-    var dateKey = _currentDateKey;
-
-    lock (_lock)
+    public void HandleReleaseRange(
+        string clientId,
+        string roomId,
+        string slotStartId,
+        string slotEndId,
+        NetworkStream replyStream,
+        TextWriter log)
     {
-        if (!_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
+        var dateKey = _currentDateKey;
+
+        lock (_lock)
         {
-            Send(replyStream, "INFO|ERROR|No slots for current date\n");
-            return;
-        }
-
-        int startIdx = ParseSlotIndex(slotStartId);
-        int endIdx   = ParseSlotIndex(slotEndId);
-        if (startIdx <= 0 || endIdx <= 0 || endIdx < startIdx)
-        {
-            Send(replyStream, "INFO|ERROR|Invalid slot range\n");
-            return;
-        }
-
-        // Tìm booking range tương ứng (cùng user, room, date, range)
-        var booking = _bookings.FirstOrDefault(b =>
-               b.UserId        == clientId
-            && b.RoomId        == roomId
-            && b.Date          == dateKey
-            && b.IsRangeBooking
-            && b.SlotStartId   == slotStartId
-            && b.SlotEndId     == slotEndId
-            && (b.Status == "APPROVED" || b.Status == "IN_USE"));
-
-        if (booking == null)
-        {
-            Send(replyStream, "INFO|ERROR|NO_RANGE_BOOKING\n");
-            return;
-        }
-
-        // Xác định trạng thái mới: nếu đang IN_USE -> COMPLETED, nếu APPROVED -> CANCELLED
-        string newStatus = (booking.Status == "IN_USE") ? "COMPLETED" : "CANCELLED";
-        booking.Status    = newStatus;
-        booking.UpdatedAt = DateTime.Now;
-
-        log.WriteLine($"[RANGE_RELEASE] {clientId} {roomId} {slotStartId}-{slotEndId} -> {newStatus}");
-
-        // Giải phóng TẤT CẢ slot thuộc range này
-        int sIdx = ParseSlotIndex(booking.SlotStartId);
-        int eIdx = ParseSlotIndex(booking.SlotEndId);
-        for (int idx = sIdx; idx <= eIdx; idx++)
-        {
-            var sid = GetSlotId(idx);
-            var key = MakeKey(roomId, sid);
-
-            if (!slotsForDate.TryGetValue(key, out var slot))
-                continue;
-
-            // chỉ free nếu slot đang gắn đúng booking này
-            if (slot.CurrentBookingId == booking.BookingId)
+            if (!_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
             {
-                slot.IsBusy = false;
-                slot.CurrentHolderClientId = null;
-                slot.CurrentBookingId = null;
-
-                log.WriteLine($"[SLOT] RANGE_RELEASE free {roomId}-{sid} on {dateKey}");
-
-                // Option: cấp cho queue tiếp theo từng slot
-                GrantNextFromQueue(dateKey, roomId, sid, slot, log);
+                Send(replyStream, "INFO|ERROR|No slots for current date\n");
+                return;
             }
-        }
 
-        // Báo lại cho client
-        Send(replyStream,
-            $"INFO|RANGE_RELEASED|{roomId}|{slotStartId}|{slotEndId}\n");
+            int startIdx = ParseSlotIndex(slotStartId);
+            int endIdx = ParseSlotIndex(slotEndId);
+            if (startIdx <= 0 || endIdx <= 0 || endIdx < startIdx)
+            {
+                Send(replyStream, "INFO|ERROR|Invalid slot range\n");
+                return;
+            }
+
+            // Tìm booking range tương ứng (cùng user, room, date, range)
+            var booking = _bookings.FirstOrDefault(b =>
+                   b.UserId == clientId
+                && b.RoomId == roomId
+                && b.Date == dateKey
+                && b.IsRangeBooking
+                && b.SlotStartId == slotStartId
+                && b.SlotEndId == slotEndId
+                && (b.Status == "APPROVED" || b.Status == "IN_USE"));
+
+            if (booking == null)
+            {
+                Send(replyStream, "INFO|ERROR|NO_RANGE_BOOKING\n");
+                return;
+            }
+
+            // Xác định trạng thái mới: nếu đang IN_USE -> COMPLETED, nếu APPROVED -> CANCELLED
+            string newStatus = (booking.Status == "IN_USE") ? "COMPLETED" : "CANCELLED";
+            booking.Status = newStatus;
+            booking.UpdatedAt = DateTime.Now;
+
+            log.WriteLine($"[RANGE_RELEASE] {clientId} {roomId} {slotStartId}-{slotEndId} -> {newStatus}");
+
+            // Giải phóng TẤT CẢ slot thuộc range này
+            int sIdx = ParseSlotIndex(booking.SlotStartId);
+            int eIdx = ParseSlotIndex(booking.SlotEndId);
+            for (int idx = sIdx; idx <= eIdx; idx++)
+            {
+                var sid = GetSlotId(idx);
+                var key = MakeKey(roomId, sid);
+
+                if (!slotsForDate.TryGetValue(key, out var slot))
+                    continue;
+
+                // chỉ free nếu slot đang gắn đúng booking này
+                if (slot.CurrentBookingId == booking.BookingId)
+                {
+                    slot.IsBusy = false;
+                    slot.CurrentHolderClientId = null;
+                    slot.CurrentBookingId = null;
+
+                    log.WriteLine($"[SLOT] RANGE_RELEASE free {roomId}-{sid} on {dateKey}");
+
+                    // Option: cấp cho queue tiếp theo từng slot
+                    GrantNextFromQueue(dateKey, roomId, sid, slot, log);
+                }
+            }
+
+            // Báo lại cho client
+            Send(replyStream,
+                $"INFO|RANGE_RELEASED|{roomId}|{slotStartId}|{slotEndId}\n");
+        }
     }
-}
 
     public BookingView? GetCurrentBookingForSlot(DateTime date, string roomId, string slotId)
     {
@@ -1263,107 +1474,121 @@ public void HandleReleaseRange(
         Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
     }
 
-public bool CompleteAndReleaseSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
-{
-    error = "";
-    var dateKey = date.ToString("yyyy-MM-dd");
-
-    lock (_lock)
+    public bool CompleteAndReleaseSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
     {
-        if (!_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
-        {
-            error = "Không tìm thấy slot.";
-            return false;
-        }
+        error = "";
+        var dateKey = date.ToString("yyyy-MM-dd");
 
-        var key = MakeKey(roomId, slotId);
-        if (!slotsForDate.TryGetValue(key, out var slot))
+        lock (_lock)
         {
-            error = "Không tìm thấy slot.";
-            return false;
-        }
-
-        if (slot.CurrentBookingId == null)
-        {
-            error = "Slot hiện không có booking.";
-            return false;
-        }
-
-        var booking = _bookings.FirstOrDefault(b => b.BookingId == slot.CurrentBookingId.Value);
-        if (booking == null)
-        {
-            error = "Không tìm thấy booking.";
-            return false;
-        }
-
-        // Chỉ admin được gọi hàm này (check IsAdmin ở ngoài)
-        string newStatus;
-        if (booking.Status == "IN_USE")
-        {
-            newStatus = "COMPLETED";
-        }
-        else if (booking.Status == "APPROVED")
-        {
-            newStatus = "CANCELLED";
-        }
-        else
-        {
-            error = $"Booking đang ở trạng thái {booking.Status}, không thể Complete.";
-            return false;
-        }
-
-        booking.Status    = newStatus;
-        booking.UpdatedAt = DateTime.Now;
-
-        // =========================
-        // 1) Nếu là booking RANGE
-        // =========================
-        if (booking.IsRangeBooking)
-        {
-            int startIdx = ParseSlotIndex(booking.SlotStartId);
-            int endIdx   = ParseSlotIndex(booking.SlotEndId);
-
-            if (startIdx <= 0 || endIdx <= 0 || endIdx < startIdx)
+            if (!_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
             {
-                // Dữ liệu range bị lỗi, fallback: xử lý như single
-                startIdx = endIdx = ParseSlotIndex(slotId);
+                error = "Không tìm thấy slot.";
+                return false;
             }
 
-            for (int idx = startIdx; idx <= endIdx; idx++)
+            var key = MakeKey(roomId, slotId);
+            if (!slotsForDate.TryGetValue(key, out var slot))
             {
-                var sidRange = GetSlotId(idx);
-                var keyRange = MakeKey(roomId, sidRange);
+                error = "Không tìm thấy slot.";
+                return false;
+            }
 
-                if (!slotsForDate.TryGetValue(keyRange, out var slotRange))
-                    continue;
+            if (slot.CurrentBookingId == null)
+            {
+                error = "Slot hiện không có booking.";
+                return false;
+            }
 
-                // Chỉ đụng vào slot đang gắn đúng booking này
-                if (slotRange.CurrentBookingId == booking.BookingId)
+            var booking = _bookings.FirstOrDefault(b => b.BookingId == slot.CurrentBookingId.Value);
+            if (booking == null)
+            {
+                error = "Không tìm thấy booking.";
+                return false;
+            }
+
+            // Chỉ admin được gọi hàm này (check IsAdmin ở ngoài)
+            string newStatus;
+            if (booking.Status == "IN_USE")
+            {
+                newStatus = "COMPLETED";
+            }
+            else if (booking.Status == "APPROVED")
+            {
+                newStatus = "CANCELLED";
+            }
+            else
+            {
+                error = $"Booking đang ở trạng thái {booking.Status}, không thể Complete.";
+                return false;
+            }
+
+            booking.Status = newStatus;
+            booking.UpdatedAt = DateTime.Now;
+
+            // =========================
+            // 1) Nếu là booking RANGE
+            // =========================
+            if (booking.IsRangeBooking)
+            {
+                int startIdx = ParseSlotIndex(booking.SlotStartId);
+                int endIdx = ParseSlotIndex(booking.SlotEndId);
+
+                if (startIdx <= 0 || endIdx <= 0 || endIdx < startIdx)
                 {
-                    slotRange.IsBusy = false;
-                    slotRange.CurrentHolderClientId = null;
-                    slotRange.CurrentBookingId = null;
+                    // Dữ liệu range bị lỗi, fallback: xử lý như single
+                    startIdx = endIdx = ParseSlotIndex(slotId);
+                }
 
-                    // Cấp quyền cho người tiếp theo (nếu có) của từng slot trong range
-                    GrantNextFromQueue(dateKey, roomId, sidRange, slotRange, log);
+                for (int idx = startIdx; idx <= endIdx; idx++)
+                {
+                    var sidRange = GetSlotId(idx);
+                    var keyRange = MakeKey(roomId, sidRange);
+
+                    if (!slotsForDate.TryGetValue(keyRange, out var slotRange))
+                        continue;
+
+                    // Chỉ đụng vào slot đang gắn đúng booking này
+                    if (slotRange.CurrentBookingId == booking.BookingId)
+                    {
+                        slotRange.IsBusy = false;
+                        slotRange.CurrentHolderClientId = null;
+                        slotRange.CurrentBookingId = null;
+
+                        // Cấp quyền cho người tiếp theo (nếu có) của từng slot trong range
+                        GrantNextFromQueue(dateKey, roomId, sidRange, slotRange, log);
+                    }
                 }
             }
-        }
-        else
-        {
-            // =========================
-            // 2) Booking single-slot (cũ)
-            // =========================
-            slot.IsBusy = false;
-            slot.CurrentHolderClientId = null;
-            slot.CurrentBookingId = null;
+            else
+            {
+                // =========================
+                // 2) Booking single-slot (cũ)
+                // =========================
+                slot.IsBusy = false;
+                slot.CurrentHolderClientId = null;
+                slot.CurrentBookingId = null;
 
-            GrantNextFromQueue(dateKey, roomId, slotId, slot, log);
-        }
+                GrantNextFromQueue(dateKey, roomId, slotId, slot, log);
+            }
 
-        log.WriteLine($"[COMPLETE] {booking.UserId} {roomId}-{slotId} ({dateKey}), status={booking.Status}");
-        return true;
+            log.WriteLine($"[COMPLETE] {booking.UserId} {roomId}-{slotId} ({dateKey}), status={booking.Status}");
+            return true;
+        }
     }
+// Admin Force RELEASE từ UI Server
+public bool ForceReleaseFromServerUi(
+    DateTime date,
+    string roomId,
+    string slotId,
+    TextWriter log,
+    out string error)
+{
+    // Dùng lại đúng logic CompleteAndReleaseSlot:
+    // - APPROVED  -> CANCELLED
+    // - IN_USE    -> COMPLETED
+    // Đồng thời cấp quyền cho người tiếp theo trong queue.
+    return CompleteAndReleaseSlot(date, roomId, slotId, log, out error);
 }
 
 }

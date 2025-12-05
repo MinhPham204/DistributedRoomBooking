@@ -30,6 +30,12 @@ public partial class Form1 : Form
     private Label _lblBookingStatus = null!;
     private Button _btnCheckIn = null!;
     private Button _btnComplete = null!;
+    private TextBox _txtEventNote = null!;
+    private Button _btnLockEvent = null!;
+    private Button _btnUnlockEvent = null!;
+    private TextBox _txtForceUserId = null!;
+private Button _btnForceGrant = null!;
+private Button _btnForceRelease = null!;
     public Form1()
     {
         InitializeComponent();
@@ -147,7 +153,7 @@ public partial class Form1 : Form
         {
             Text = "User Management (Admin on Server)",
             Left = 450,
-            Top = 295,        // dời xuống dưới Check-in
+            Top = 400,        // dời xuống dưới Check-in
             Width = 620,
             Height = 130
         };
@@ -214,7 +220,7 @@ public partial class Form1 : Form
         {
             Text = "Server log",
             Left = 450,
-            Top = 435,        // dời xuống tí cho đủ chỗ
+            Top = 540,        // dời xuống tí cho đủ chỗ
             Width = 620,
             Height = 150
         };
@@ -235,7 +241,7 @@ public partial class Form1 : Form
             Left = 450,
             Top = 195,        // dưới Queue
             Width = 620,
-            Height = 130      // cao hơn để đủ 3 label + 2 nút
+            Height = 350      // cao hơn để đủ 3 label + 2 nút
         };
         this.Controls.Add(_grpCheckin);
 
@@ -273,7 +279,7 @@ public partial class Form1 : Form
         _btnCheckIn = new Button
         {
             Left = 10,
-            Top = 75,
+            Top = 80,
             Width = 150,
             Text = "CHECK-IN",
             Enabled = false
@@ -285,7 +291,7 @@ public partial class Form1 : Form
         _btnComplete = new Button
         {
             Left = 170,
-            Top = 75,
+            Top = 80,
             Width = 150,
             Text = "Complete & Release",
             Enabled = false
@@ -293,6 +299,86 @@ public partial class Form1 : Form
         _btnComplete.Click += BtnComplete_Click;
         _grpCheckin.Controls.Add(_btnComplete);
 
+        // ===== Event Lock (trong cùng group Check-in) =====
+        var lblEventNote = new Label
+        {
+            Left = 10,
+            Top = 105,
+            Width = 80,
+            Text = "Event note:"
+        };
+        _grpCheckin.Controls.Add(lblEventNote);
+
+        _txtEventNote = new TextBox
+        {
+            Left = 90,
+            Top = 105,
+            Width = 240
+        };
+        _grpCheckin.Controls.Add(_txtEventNote);
+
+        // Nút Lock cho event
+        _btnLockEvent = new Button
+        {
+            Left = 340,
+            Top = 105,
+            Width = 120,
+            Text = "Lock for Event"
+        };
+        _btnLockEvent.Click += BtnLockEvent_Click;
+        _grpCheckin.Controls.Add(_btnLockEvent);
+
+        // Nút Unlock event
+        _btnUnlockEvent = new Button
+        {
+            Left = 470,
+            Top = 105,
+            Width = 120,
+            Text = "Unlock Event"
+        };
+        _btnUnlockEvent.Click += BtnUnlockEvent_Click;
+        _grpCheckin.Controls.Add(_btnUnlockEvent);
+
+// ===== Admin override (Force GRANT / RELEASE) =====
+var lblForceUser = new Label
+{
+    Left = 10,
+    Top = 140,
+    Width = 80,
+    Text = "Force user:"
+};
+_grpCheckin.Controls.Add(lblForceUser);
+
+_txtForceUserId = new TextBox
+{
+    Left = 90,
+    Top = 140,
+    Width = 140
+};
+_grpCheckin.Controls.Add(_txtForceUserId);
+
+_btnForceGrant = new Button
+{
+    Left = 240,
+    Top = 140,
+    Width = 120,
+    Text = "Force GRANT"
+};
+_btnForceGrant.Click += BtnForceGrant_Click;
+_grpCheckin.Controls.Add(_btnForceGrant);
+
+_btnForceRelease = new Button
+{
+    Left = 370,
+    Top = 140,
+    Width = 120,
+    Text = "Force RELEASE"
+};
+_btnForceRelease.Click += BtnForceRelease_Click;
+_grpCheckin.Controls.Add(_btnForceRelease);
+
+// tăng chiều cao group một chút cho đủ chỗ
+_grpCheckin.Height = 165;
 
     }
 
@@ -510,7 +596,7 @@ public partial class Form1 : Form
                                 {
                                     var userIdMsg = parts[1];
                                     var roomId = parts[2];
-                                    var slotStart = parts[3];   
+                                    var slotStart = parts[3];
                                     var slotEnd = parts[4];
 
                                     if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
@@ -738,6 +824,154 @@ public partial class Form1 : Form
         RefreshSlotsSafe();
         UpdateCheckinPanel();
     }
+private void BtnLockEvent_Click(object? sender, EventArgs e)
+{
+    if (_gridSlots.CurrentRow == null)
+    {
+        MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
+            "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var row = _gridSlots.CurrentRow;
+    var roomId = row.Cells["RoomId"].Value?.ToString();
+    var slotId = row.Cells["SlotId"].Value?.ToString();
+
+    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+    {
+        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.", 
+            "Lock for Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var date = _dtDate.Value.Date;
+    var note = _txtEventNote.Text.Trim();
+    var logger = new UiLogger(this);
+
+    if (!_state.LockSlotForEvent(date, roomId, slotId, note, logger, out var error))
+    {
+        MessageBox.Show(this, error, "Lock for Event thất bại",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    Log($"[UI] Locked {roomId}-{slotId} on {date:yyyy-MM-dd} for event. Note='{note}'");
+    RefreshSlotsSafe();
+    UpdateCheckinPanel();
+}
+
+private void BtnUnlockEvent_Click(object? sender, EventArgs e)
+{
+    if (_gridSlots.CurrentRow == null)
+    {
+        MessageBox.Show(this, "Hãy chọn 1 phòng / ca trong bảng Slot trước.",
+            "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var row = _gridSlots.CurrentRow;
+    var roomId = row.Cells["RoomId"].Value?.ToString();
+    var slotId = row.Cells["SlotId"].Value?.ToString();
+
+    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+    {
+        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+            "Unlock Event", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var date = _dtDate.Value.Date;
+    var logger = new UiLogger(this);
+
+    if (!_state.UnlockSlotFromEvent(date, roomId, slotId, logger, out var error))
+    {
+        MessageBox.Show(this, error, "Unlock Event thất bại",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    Log($"[UI] Unlocked event at {roomId}-{slotId} on {date:yyyy-MM-dd}");
+    RefreshSlotsSafe();
+    UpdateCheckinPanel();
+}
+
+private void BtnForceGrant_Click(object? sender, EventArgs e)
+{
+    if (_gridSlots.CurrentRow == null)
+    {
+        MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
+            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var row = _gridSlots.CurrentRow;
+    var roomId = row.Cells["RoomId"].Value?.ToString();
+    var slotId = row.Cells["SlotId"].Value?.ToString();
+
+    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+    {
+        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var targetUserId = _txtForceUserId.Text.Trim();
+    if (string.IsNullOrEmpty(targetUserId))
+    {
+        MessageBox.Show(this, "Target UserId không được trống.",
+            "Force GRANT", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var date = _dtDate.Value.Date;
+    var logger = new UiLogger(this);
+
+    if (!_state.ForceGrantFromServerUi(date, roomId, slotId, targetUserId, logger, out var error))
+    {
+        MessageBox.Show(this, error, "Force GRANT failed",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    Log($"[ADMIN-UI] Force GRANT {targetUserId} -> {roomId}-{slotId} ({date:yyyy-MM-dd})");
+    RefreshSlotsSafe();
+    UpdateCheckinPanel();
+}
+
+private void BtnForceRelease_Click(object? sender, EventArgs e)
+{
+    if (_gridSlots.CurrentRow == null)
+    {
+        MessageBox.Show(this, "Hãy chọn 1 phòng/ca trong bảng Slot trước.",
+            "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var row = _gridSlots.CurrentRow;
+    var roomId = row.Cells["RoomId"].Value?.ToString();
+    var slotId = row.Cells["SlotId"].Value?.ToString();
+
+    if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
+    {
+        MessageBox.Show(this, "Dòng đang chọn không hợp lệ.",
+            "Force RELEASE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    var date = _dtDate.Value.Date;
+    var logger = new UiLogger(this);
+
+    if (!_state.ForceReleaseFromServerUi(date, roomId, slotId, logger, out var error))
+    {
+        MessageBox.Show(this, error, "Force RELEASE failed",
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    Log($"[ADMIN-UI] Force RELEASE {roomId}-{slotId} ({date:yyyy-MM-dd})");
+    RefreshSlotsSafe();
+    UpdateCheckinPanel();
+}
 
     private void UpdateQueueViewForSelected()
     {
