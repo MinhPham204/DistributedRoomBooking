@@ -7,7 +7,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
-
+using System.IO;
 namespace BookingClient
 {
     public class LoginForm : Form
@@ -33,10 +33,61 @@ namespace BookingClient
         private const int SERVER_TCP_PORT = 5000;
         private const int DISCOVERY_UDP_PORT = 5001;
 
+        private readonly string _rememberFilePath =
+            Path.Combine(Application.UserAppDataPath, "remember_login.txt");
+
         public LoginForm()
         {
             InitializeComponent();
             SetupUi();
+            LoadRememberedLogin();
+        }
+        private void LoadRememberedLogin()
+        {
+            try
+            {
+                if (!File.Exists(_rememberFilePath))
+                    return;
+
+                var line = File.ReadAllText(_rememberFilePath).Trim();
+                if (string.IsNullOrWhiteSpace(line))
+                    return;
+
+                var parts = line.Split('|');
+                if (parts.Length >= 2 && bool.TryParse(parts[1], out var remember) && remember)
+                {
+                    _txtUserId.Text = parts[0];
+                    _chkRemember.Checked = true;
+                }
+            }
+            catch
+            {
+                // lỗi đọc file thì bỏ qua, không cần báo
+            }
+        }
+
+        private void SaveRememberedLogin(string userId)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(_rememberFilePath);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+
+                if (_chkRemember.Checked)
+                {
+                    File.WriteAllText(_rememberFilePath, $"{userId}|true");
+                }
+                else
+                {
+                    if (File.Exists(_rememberFilePath))
+                        File.Delete(_rememberFilePath);
+                }
+            }
+            catch
+            {
+                // lỗi ghi file thì cũng bỏ qua, không crash app
+            }
         }
 
         private void InitializeComponent()
@@ -201,9 +252,9 @@ namespace BookingClient
             };
             _btnLogin.Click += BtnLogin_Click; // sau này viết logic
 
-            // Không cho người dùng tự gõ IP nữa
-            _txtServerIp.ReadOnly = true;
-            _txtServerIp.Text = "(auto)";
+            // // Không cho người dùng tự gõ IP nữa
+            // _txtServerIp.ReadOnly = true;
+            // _txtServerIp.Text = "(auto)";
 
             // Bắt buộc phải Check connect trước khi login
             _btnLogin.Enabled = false;
@@ -225,9 +276,18 @@ namespace BookingClient
             };
             _lnkForgotPassword.Click += (s, e) =>
             {
-                // TODO: mở form reset mật khẩu (demo)
-                MessageBox.Show("Demo quên mật khẩu (chưa implement).",
-                    "Quên mật khẩu");
+                var serverIp = _txtServerIp.Text.Trim();
+                if (string.IsNullOrWhiteSpace(serverIp))
+                {
+                    MessageBox.Show("Vui lòng nhập Server IP trước.", "Quên mật khẩu");
+                    return;
+                }
+
+                using (var f = new ForgotPasswordForm(serverIp))
+                {
+                    f.StartPosition = FormStartPosition.CenterParent;
+                    f.ShowDialog(this);
+                }
             };
             Controls.Add(_lnkForgotPassword);
 
@@ -244,7 +304,7 @@ namespace BookingClient
         }
 
         // ====== chỗ này sau này bạn gắn network/login thật ======
-        private void BtnLogin_Click(object? sender, EventArgs e)
+        private async void BtnLogin_Click(object? sender, EventArgs e)
         {
             // BẮT BUỘC: phải check connect trước
             if (!_isConnectedOk || string.IsNullOrEmpty(_detectedServerIp))
@@ -253,23 +313,120 @@ namespace BookingClient
                 return;
             }
 
-            // TODO: sau này bạn sẽ gọi LOGIN thật qua TCP tới _detectedServerIp:SERVER_TCP_PORT
-            // Hiện tại vẫn demo fake user
-            var fakeUser = new DemoUserInfo
-            {
-                UserId = _txtUserId.Text.Trim(),
-                FullName = "Nguyễn Văn A",
-                UserType = "Student",
-                StudentId = "N21DCCN001",
-                Class = "D21CQCN01-N",
-                Department = "CNTT",
-                Email = "nguyenvana@example.com",
-                Phone = "0123456789"
-            };
+            _lblError.Text = "";
 
-            var mainForm = new MainClientForm(fakeUser, _detectedServerIp);
-            mainForm.Show();
-            this.Hide();
+            var userId = _txtUserId.Text.Trim();
+            var password = _txtPassword.Text;
+
+            if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(password))
+            {
+                _lblError.Text = "Vui lòng nhập User ID và Password.";
+                return;
+            }
+
+            _btnLogin.Enabled = false;
+
+            try
+            {
+                using (var tcp = new TcpClient())
+                {
+                    // có thể dùng port đã detect được, ở đây anh đang dùng SERVER_TCP_PORT = 5000
+                    await tcp.ConnectAsync(IPAddress.Parse(_detectedServerIp!), SERVER_TCP_PORT);
+
+                    using (var stream = tcp.GetStream())
+                    using (var writer = new StreamWriter(stream, Encoding.UTF8, leaveOpen: true))
+                    using (var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true))
+                    {
+                        writer.NewLine = "\n";
+                        writer.AutoFlush = true;
+
+                        // Gửi lệnh LOGIN: LOGIN|userId|password\n
+                        var request = $"LOGIN|{userId}|{password}";
+                        await writer.WriteLineAsync(request);
+
+                        // Đọc 1 dòng trả về
+                        var line = await reader.ReadLineAsync();
+                        if (line == null)
+                        {
+                            _lblError.Text = "Không nhận được phản hồi từ server.";
+                            return;
+                        }
+
+                        var parts = line.Split('|');
+                        if (parts.Length == 0)
+                        {
+                            _lblError.Text = "Phản hồi LOGIN không hợp lệ.";
+                            return;
+                        }
+
+                        if (parts[0] == "LOGIN_OK")
+                        {
+                            // LOGIN_OK|UserId|UserType|FullName|Email|Phone|StudentId|Class|Department|LecturerId|Faculty
+                            if (parts.Length < 11)
+                            {
+                                _lblError.Text = "Dữ liệu người dùng trả về không đầy đủ.";
+                                return;
+                            }
+
+                            var info = new DemoUserInfo
+                            {
+                                UserId = parts[1],
+                                UserType = parts[2],
+                                FullName = parts[3],
+                                Email = parts[4],
+                                Phone = parts[5],
+                                StudentId = parts[6],
+                                Class = parts[7],
+                                Department = parts[8],
+                                LecturerId = parts[9],
+                                Faculty = parts[10]
+                            };
+
+                            // Lưu nhớ tài khoản nếu user chọn
+                            SaveRememberedLogin(info.UserId);
+
+                            // Mở Main Client Form
+                            var mainForm = new MainClientForm(info, _detectedServerIp);
+                            mainForm.Show();
+                            this.Hide();
+                        }
+                        else if (parts[0] == "LOGIN_FAIL")
+                        {
+                            // LOGIN_FAIL|REASON|Message
+                            var reason = parts.Length >= 2 ? parts[1] : "";
+                            // var messageFromServer = parts.Length >= 3 ? parts[2] : "";
+
+                            switch (reason)
+                            {
+                                case "USER_NOT_FOUND":
+                                    _lblError.Text = "User không tồn tại.";
+                                    break;
+                                case "USER_INACTIVE":
+                                    _lblError.Text = "Tài khoản đang bị khóa (Inactive).";
+                                    break;
+                                case "INVALID_PASSWORD":
+                                    _lblError.Text = "Sai mật khẩu, vui lòng thử lại.";
+                                    break;
+                                default:
+                                    _lblError.Text = "Đăng nhập thất bại.";
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            _lblError.Text = "Phản hồi không hỗ trợ: " + line;
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _lblError.Text = "Lỗi khi đăng nhập: " + ex.Message;
+            }
+            finally
+            {
+                _btnLogin.Enabled = true;
+            }
         }
 
         private async Task CheckConnectAsync()

@@ -8,7 +8,8 @@ using System.Text;
 using BC = BCrypt.Net.BCrypt;
 using BCryptNet = BCrypt.Net.BCrypt;
 using System.Text.Json;
-
+using System.Net;
+using System.Net.Mail;
 
 namespace BookingServer;
 
@@ -77,6 +78,54 @@ class ServerState
     public IReadOnlyDictionary<string, RoomInfo> RoomsInfo => _rooms;
     public IReadOnlyDictionary<string, UserInfo> UsersInfo => _users;
     public IReadOnlyList<Booking> Bookings => _bookings;
+    // ===== App settings (Tab Settings) =====
+    private AppSettings _settings = AppSettings.CreateDefault();
+    private const string SettingsFileName = "appsettings.json";
+
+    public AppSettings Settings
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _settings;
+            }
+        }
+    }
+
+
+    private bool _useDemoNow;
+    private DateTime _demoNow;
+
+    public DateTime Now
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _useDemoNow ? _demoNow : DateTime.Now;
+            }
+        }
+    }
+
+    public void SetDemoNow(DateTime demoNow, TextWriter log)
+    {
+        lock (_lock)
+        {
+            _demoNow = demoNow;
+            _useDemoNow = true;
+            log.WriteLine($"[TIME] Switch to demo time: {_demoNow:yyyy-MM-dd HH:mm}");
+        }
+    }
+
+    public void ResetDemoNow(TextWriter log)
+    {
+        lock (_lock)
+        {
+            _useDemoNow = false;
+            log.WriteLine("[TIME] Switch back to system time");
+        }
+    }
 
     private static readonly string[] FacultyList =
 {
@@ -91,6 +140,55 @@ class ServerState
     public ServerState()
     {
         InitDemoData();
+        LoadSettings(); // <- load appsettings.json nếu có
+
+    }
+    private void LoadSettings()
+    {
+        try
+        {
+            if (File.Exists(SettingsFileName))
+            {
+                var json = File.ReadAllText(SettingsFileName);
+                var loaded = JsonSerializer.Deserialize<AppSettings>(json);
+                if (loaded != null && loaded.SlotTimes != null && loaded.SlotTimes.Count == 14)
+                {
+                    _settings = loaded;
+                    return;
+                }
+            }
+        }
+        catch
+        {
+            // ignore lỗi, dùng default
+        }
+
+        _settings = AppSettings.CreateDefault();
+    }
+
+    private void SaveSettings()
+    {
+        try
+        {
+            var json = JsonSerializer.Serialize(_settings,
+                new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(SettingsFileName, json);
+        }
+        catch
+        {
+            // có thể log nếu muốn
+        }
+    }
+
+    public void UpdateSettings(AppSettings newSettings)
+    {
+        if (newSettings == null) return;
+
+        lock (_lock)
+        {
+            _settings = newSettings;
+            SaveSettings();
+        }
     }
 
     // Cập nhật ngày hiện tại từ UI server
@@ -280,6 +378,25 @@ class ServerState
 
         return (true, user.UserType, "");
     }
+public UserInfo? FindUserByEmail(string email)
+{
+    if (string.IsNullOrWhiteSpace(email))
+        return null;
+
+    lock (_lock)
+    {
+        foreach (var u in _users.Values)
+        {
+            if (!string.IsNullOrEmpty(u.Email) &&
+                string.Equals(u.Email, email, StringComparison.OrdinalIgnoreCase))
+            {
+                return u;
+            }
+        }
+    }
+
+    return null;
+}
 
     public bool IsAdmin(string userId)
     {
@@ -624,27 +741,51 @@ class ServerState
         return -1;
     }
 
-    // Tính giờ kết thúc ca (dùng cho mode RealTime)
-    // Giả sử ca 1: 07:00-08:00, ca 2: 08:00-09:00, ... ca 14: 20:00-21:00
-    private DateTime GetSlotEndTime(string dateKey, string slotId)
+    private (TimeSpan start, TimeSpan end) GetSlotTimeOfDay(int idx)
     {
-        var date = DateTime.Parse(dateKey); // yyyy-MM-dd
-        int idx = ParseSlotIndex(slotId);
-        if (idx <= 0) idx = 1;
-        var start = date.Date.AddHours(7 + (idx - 1)); // ca1 = 7h
-        var end = start.AddHours(1);
-        return end;
+        // idx 1..14
+        if (idx <= 0 || idx > SlotCount ||
+            _settings.SlotTimes == null || _settings.SlotTimes.Count == 0)
+        {
+            // fallback: 1h/ca từ 07:00
+            var s = TimeSpan.FromHours(7 + (idx - 1));
+            return (s, s.Add(TimeSpan.FromHours(1)));
+        }
+
+        var row = _settings.SlotTimes
+            .FirstOrDefault(r => r.Index == idx)
+            ?? _settings.SlotTimes.FirstOrDefault(
+                r => string.Equals(r.SlotId, $"S{idx}", StringComparison.OrdinalIgnoreCase));
+
+        if (row == null ||
+            !TimeSpan.TryParse(row.Start, out var start) ||
+            !TimeSpan.TryParse(row.End, out var end))
+        {
+            var s = TimeSpan.FromHours(7 + (idx - 1));
+            return (s, s.Add(TimeSpan.FromHours(1)));
+        }
+
+        return (start, end);
     }
 
-    // Giờ bắt đầu ca, dùng để phân biệt BEFORE / DURING / AFTER cho COMPLETED
+
     private DateTime GetSlotStartTime(string dateKey, string slotId)
     {
-        var date = DateTime.Parse(dateKey); // yyyy-MM-dd
+        var date = DateTime.Parse(dateKey);
         int idx = ParseSlotIndex(slotId);
         if (idx <= 0) idx = 1;
-        // ca1: 07:00–08:00, ca2: 08:00–09:00, ...
-        var start = date.Date.AddHours(7 + (idx - 1));
-        return start;
+
+        var (startTod, _) = GetSlotTimeOfDay(idx);
+        return date.Date + startTod;
+    }
+    private DateTime GetSlotEndTime(string dateKey, string slotId)
+    {
+        var date = DateTime.Parse(dateKey);
+        int idx = ParseSlotIndex(slotId);
+        if (idx <= 0) idx = 1;
+
+        var (_, endTod) = GetSlotTimeOfDay(idx);
+        return date.Date + endTod;
     }
 
     // Kiểm tra cùng client có đang giữ slot trùng ca ở phòng khác hay không
@@ -713,7 +854,7 @@ class ServerState
             }
 
             // 1) Chặn ca đã qua (mode RealTime đơn giản)
-            var now = DateTime.Now;
+            var now = Now;
             var endTime = GetSlotEndTime(_currentDateKey, slotId);
             if (endTime <= now)
             {
@@ -766,17 +907,36 @@ class ServerState
 
                 // 👉 Tạo booking mới cho lần GRANT này
                 var booking = CreateBookingForGrant(
-    clientId,
-    roomId,
-    _currentDateKey,
-    slotId,   // start == end với single
-    slotId,
-    false,    // IsRangeBooking
-    log);
+                    clientId,
+                    roomId,
+                    _currentDateKey,
+                    slotId,   // start == end với single
+                    slotId,
+                    false,    // IsRangeBooking
+                    log);
                 slot.CurrentBookingId = booking.BookingId;
 
                 log.WriteLine($"[GRANT] {clientId} -> {roomId}-{slotId} on date {_currentDateKey}");
                 Send(stream, $"GRANT|{roomId}|{slotId}\n");
+                if (_settings.SendEmailOnGrant)
+                {
+                    var subject = "[Room booking] Booking của bạn đã được duyệt";
+                    var bodyTemplate =
+                        "Chào {FullName},\n\n" +
+                        "Booking của bạn đã được GRANT.\n" +
+                        "- Phòng: {RoomId}\n" +
+                        "- Ngày: {Date}\n" +
+                        "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                        "- Trạng thái: {Status}\n\n" +
+                        "Vui lòng check-in trước deadline.";
+
+                    SendEmailForBooking(booking, subject, bodyTemplate, log);
+                }
+                if (_settings.SendNotificationToClient)
+                {
+                    NotifyClientBookingChanged(booking.UserId,
+                        $"GRANTED|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}", log);
+                }
             }
             else
             {
@@ -854,7 +1014,7 @@ class ServerState
                     }
 
                     currentBooking.Status = newStatus;
-                    currentBooking.UpdatedAt = DateTime.Now;
+                    currentBooking.UpdatedAt = Now;
                     log.WriteLine($"[BOOKING] {currentBooking.BookingId} -> {newStatus} by {clientId}");
                 }
 
@@ -888,6 +1048,30 @@ class ServerState
 
                     log.WriteLine($"[GRANT] {nextClientId} -> {roomId}-{slotId} from queue on date {_currentDateKey}");
                     Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+
+                    if (_settings.SendEmailOnGrant)
+                    {
+                        var subject = "[Room booking] Booking của bạn đã được GRANT từ hàng chờ";
+                        var bodyTemplate =
+                            "Chào {FullName},\n\n" +
+                            "Yêu cầu đặt phòng của bạn đã được GRANT (từ hàng chờ), do người giữ slot đã release.\n" +
+                            "- Phòng: {RoomId}\n" +
+                            "- Ngày: {Date}\n" +
+                            "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                            "- Trạng thái: {Status}\n\n" +
+                            "Vui lòng check-in trước hạn.";
+                        SendEmailForBooking(booking, subject, bodyTemplate, log);
+                    }
+
+                    if (_settings.SendNotificationToClient)
+                    {
+                        NotifyClientBookingChanged(
+                            booking.UserId,
+                            $"GRANTED_FROM_QUEUE|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                            log
+                        );
+                    }
+
                 }
 
                 return;
@@ -982,6 +1166,30 @@ class ServerState
 
                             log.WriteLine($"[GRANT] {nextClientId} (from queue, after disconnect) -> {roomId}-{slotId} on {dateKey}");
                             Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+
+                            if (_settings.SendEmailOnGrant)
+                            {
+                                var subject = "[Room booking] Booking của bạn đã được GRANT (sau khi người trước disconnect)";
+                                var bodyTemplate =
+                                    "Chào {FullName},\n\n" +
+                                    "Yêu cầu đặt phòng của bạn đã được GRANT sau khi người giữ slot trước đó bị ngắt kết nối.\n" +
+                                    "- Phòng: {RoomId}\n" +
+                                    "- Ngày: {Date}\n" +
+                                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                                    "- Trạng thái: {Status}\n\n" +
+                                    "Vui lòng check-in trước hạn.";
+                                SendEmailForBooking(newBooking, subject, bodyTemplate, log);
+                            }
+
+                            if (_settings.SendNotificationToClient)
+                            {
+                                NotifyClientBookingChanged(
+                                    newBooking.UserId,
+                                    $"GRANTED_FROM_QUEUE|{newBooking.BookingId}|{newBooking.RoomId}|{newBooking.SlotStartId}|{newBooking.SlotEndId}",
+                                    log
+                                );
+                            }
+
                         }
                     }
 
@@ -1039,8 +1247,14 @@ class ServerState
     bool isRange,
     TextWriter log)
     {
-        var now = DateTime.Now;
+        var now = Now;
         var endTime = GetSlotEndTime(dateKey, slotEndId);
+
+        var deadlineMinutes = _settings.CheckinDeadlineMinutes <= 0
+            ? 15
+            : _settings.CheckinDeadlineMinutes;
+
+        var rawDeadline = now.AddMinutes(deadlineMinutes);
 
         var booking = new Booking
         {
@@ -1056,9 +1270,13 @@ class ServerState
             CreatedAt = now,
             UpdatedAt = now,
             Status = "APPROVED",
-            CheckinDeadline = (now.AddMinutes(15) <= endTime)
-            ? now.AddMinutes(15)
-            : endTime
+            CheckinDeadline = (now.AddMinutes(
+                    _settings.CheckinDeadlineMinutes <= 0 ? 15 : _settings.CheckinDeadlineMinutes
+                ) <= endTime)
+                ? now.AddMinutes(
+                    _settings.CheckinDeadlineMinutes <= 0 ? 15 : _settings.CheckinDeadlineMinutes
+                )
+                : endTime
         };
 
         _bookings.Add(booking);
@@ -1078,68 +1296,69 @@ class ServerState
         if (booking == null) return;
 
         booking.Status = newStatus;
-        booking.UpdatedAt = DateTime.Now;
+        var now = Now;
+        booking.UpdatedAt = now;
 
         log.WriteLine($"[BOOKING] {booking.BookingId} -> {newStatus} for {roomId}-{slotId}");
     }
 
-// BookingServer/ServerState.cs
+    // BookingServer/ServerState.cs
 
-public List<BookingView> GetBookingViews()
-{
-    lock (_lock)
+    public List<BookingView> GetBookingViews()
     {
-        var list = new List<BookingView>();
-
-        foreach (var b in _bookings)
+        lock (_lock)
         {
-            _users.TryGetValue(b.UserId, out var u);
+            var list = new List<BookingView>();
 
-            // dateKey dạng yyyy-MM-dd (b.Date đã ở dạng này rồi)
-            var dateKey = b.Date;
-
-            // Tính time range: nếu có slot start/end thì dùng, nếu không thì để trống
-            string timeRange = "";
-            if (!string.IsNullOrEmpty(b.SlotStartId) && !string.IsNullOrEmpty(b.SlotEndId))
+            foreach (var b in _bookings)
             {
-                var startTime = GetSlotStartTime(dateKey, b.SlotStartId);
-                var endTime = GetSlotEndTime(dateKey, b.SlotEndId);
-                timeRange = $"{startTime:HH:mm}-{endTime:HH:mm}";
+                _users.TryGetValue(b.UserId, out var u);
+
+                // dateKey dạng yyyy-MM-dd (b.Date đã ở dạng này rồi)
+                var dateKey = b.Date;
+
+                // Tính time range: nếu có slot start/end thì dùng, nếu không thì để trống
+                string timeRange = "";
+                if (!string.IsNullOrEmpty(b.SlotStartId) && !string.IsNullOrEmpty(b.SlotEndId))
+                {
+                    var startTime = GetSlotStartTime(dateKey, b.SlotStartId);
+                    var endTime = GetSlotEndTime(dateKey, b.SlotEndId);
+                    timeRange = $"{startTime:HH:mm}-{endTime:HH:mm}";
+                }
+
+                list.Add(new BookingView
+                {
+                    BookingId = b.BookingId,
+
+                    UserId = b.UserId,
+                    FullName = u?.FullName ?? "",
+                    UserType = u?.UserType ?? "",
+                    Email = u?.Email ?? "",
+                    Phone = u?.Phone ?? "",
+
+                    RoomId = b.RoomId,
+                    Date = b.Date,
+                    SlotStartId = b.SlotStartId,
+                    SlotEndId = b.SlotEndId,
+                    TimeRange = timeRange,
+                    IsRange = b.IsRangeBooking,
+                    Purpose = b.Purpose ?? "",
+
+                    Status = b.Status,
+                    CheckinDeadline = b.CheckinDeadline,
+                    CheckinTime = b.CheckinTime,
+
+                    CreatedAt = b.CreatedAt,
+                    UpdatedAt = b.UpdatedAt
+                });
             }
 
-            list.Add(new BookingView
-            {
-                BookingId      = b.BookingId,
-
-                UserId         = b.UserId,
-                FullName       = u?.FullName ?? "",
-                UserType       = u?.UserType ?? "",
-                Email          = u?.Email ?? "",
-                Phone          = u?.Phone ?? "",
-
-                RoomId         = b.RoomId,
-                Date           = b.Date,
-                SlotStartId    = b.SlotStartId,
-                SlotEndId      = b.SlotEndId,
-                TimeRange      = timeRange,
-                IsRange        = b.IsRangeBooking,
-                Purpose        = b.Purpose ?? "",
-
-                Status         = b.Status,
-                CheckinDeadline= b.CheckinDeadline,
-                CheckinTime    = b.CheckinTime,
-
-                CreatedAt      = b.CreatedAt,
-                UpdatedAt      = b.UpdatedAt
-            });
+            // sort mới nhất lên trên cho dễ xem
+            return list
+                .OrderByDescending(v => v.CreatedAt)
+                .ToList();
         }
-
-        // sort mới nhất lên trên cho dễ xem
-        return list
-            .OrderByDescending(v => v.CreatedAt)
-            .ToList();
     }
-}
 
 
     public void HandleForceGrant(
@@ -1223,6 +1442,30 @@ public List<BookingView> GetBookingViews()
 
             // Thông báo cho admin (client hiện tại)
             Send(adminStream, $"INFO|FORCE_GRANTED|{targetUserId}|{roomId}|{slotId}\n");
+
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var subject = "[Room booking] Booking đã được FORCE GRANT";
+                var bodyTemplate =
+                    "Chào {FullName},\n\n" +
+                    "Admin đã FORCE GRANT một booking cho bạn.\n" +
+                    "- Phòng: {RoomId}\n" +
+                    "- Ngày: {Date}\n" +
+                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                    "- Trạng thái: {Status}\n\n" +
+                    "Vui lòng chú ý lịch dạy/học của mình.";
+                SendEmailForBooking(booking, subject, bodyTemplate, log);
+            }
+
+            if (_settings.SendNotificationToClient)
+            {
+                NotifyClientBookingChanged(
+                    booking.UserId,
+                    $"FORCE_GRANT|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                    log
+                );
+            }
+
         }
     }
 
@@ -1305,6 +1548,29 @@ public List<BookingView> GetBookingViews()
             slot.CurrentBookingId = booking.BookingId;
 
             log.WriteLine($"[ADMIN FORCE_GRANT-UI] {targetUserId} -> {roomId}-{slotId} on {dateKey}");
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var subject = "[Room booking] Booking đã được FORCE GRANT";
+                var bodyTemplate =
+                    "Chào {FullName},\n\n" +
+                    "Admin đã FORCE GRANT một booking (1 ca) cho bạn.\n" +
+                    "- Phòng: {RoomId}\n" +
+                    "- Ngày: {Date}\n" +
+                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                    "- Trạng thái: {Status}\n\n" +
+                    "Vui lòng chú ý lịch dạy/học của mình.";
+                SendEmailForBooking(booking, subject, bodyTemplate, log);
+            }
+
+            if (_settings.SendNotificationToClient)
+            {
+                NotifyClientBookingChanged(
+                    booking.UserId,
+                    $"FORCE_GRANT|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                    log
+                );
+            }
+
             return true;
         }
     }
@@ -1424,6 +1690,25 @@ public List<BookingView> GetBookingViews()
             }
 
             log.WriteLine($"[ADMIN FORCE_GRANT_RANGE-UI] {targetUserId} -> {roomId}-{slotStartId}-{slotEndId} on {dateKey}");
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var subject = "[Room booking] Booking đã được FORCE GRANT";
+                var bodyTemplate =
+                    "Chào {FullName},\n\n" +
+                    "Admin đã FORCE GRANT một booking cho bạn.\n" +
+                    "- Phòng: {RoomId}\n" +
+                    "- Ngày: {Date}\n" +
+                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                    "- Trạng thái: {Status}\n\n" +
+                    "Vui lòng chú ý lịch dạy/học của mình.";
+
+                SendEmailForBooking(booking, subject, bodyTemplate, log);
+            }
+            if (_settings.SendNotificationToClient)
+            {
+                NotifyClientBookingChanged(booking.UserId,
+                    $"FORCE_GRANT|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}", log);
+            }
             return true;
         }
     }
@@ -1469,7 +1754,7 @@ public List<BookingView> GetBookingViews()
                 return;
             }
 
-            var now = DateTime.Now;
+            var now = Now;
 
             // Chỉ cho check-in nếu đang APPROVED và còn trong deadline
             if (booking.Status != "APPROVED")
@@ -1502,6 +1787,22 @@ public List<BookingView> GetBookingViews()
                     booking.Status = "NO_SHOW";
                     booking.UpdatedAt = now;
                     log.WriteLine($"[NO_SHOW] Booking {booking.BookingId} {booking.UserId} {booking.RoomId} {booking.SlotStartId}-{booking.SlotEndId}");
+
+                    if (_settings.SendEmailOnNoShow)
+                    {
+                        var subject = "[Room booking] Bạn đã bị NO-SHOW";
+                        var bodyTemplate =
+                            "Chào {FullName},\n\n" +
+                            "Booking của bạn đã bị đánh dấu NO-SHOW.\n" +
+                            "- Phòng: {RoomId}\n" +
+                            "- Ngày: {Date}\n" +
+                            "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                            "- Trạng thái: {Status}\n\n" +
+                            "Vui lòng liên hệ quản trị nếu cần hỗ trợ.";
+
+                        SendEmailForBooking(booking, subject, bodyTemplate, log);
+                    }
+
 
                     // Giải phóng tất cả slot thuộc booking này
                     if (!_slotsByDate.TryGetValue(booking.Date, out var dict))
@@ -1557,7 +1858,7 @@ public List<BookingView> GetBookingViews()
             var dict = _slotsByDate[_currentDateKey];
 
             // 1. Chặn ca đã qua (nếu ca cuối đã qua thì từ chối)
-            var now = DateTime.Now;
+            var now = Now;
             var rangeEndTime = GetSlotEndTime(_currentDateKey, slotEndId);
             if (rangeEndTime <= now)
             {
@@ -1641,6 +1942,30 @@ public List<BookingView> GetBookingViews()
 
             log.WriteLine($"[GRANT_RANGE] {clientId} -> {roomId}-{slotStartId}-{slotEndId} on date {_currentDateKey}");
             Send(stream, $"GRANT_RANGE|{roomId}|{slotStartId}|{slotEndId}\n");
+            if (_settings.SendEmailOnGrant)
+            {
+                var subject = "[Room booking] Booking RANGE của bạn đã được GRANT";
+                var bodyTemplate =
+                    "Chào {FullName},\n\n" +
+                    "Yêu cầu đặt phòng (nhiều ca liên tiếp) của bạn đã được GRANT.\n" +
+                    "- Phòng: {RoomId}\n" +
+                    "- Ngày: {Date}\n" +
+                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                    "- Trạng thái: {Status}\n\n" +
+                    "Vui lòng check-in trước hạn.";
+                SendEmailForBooking(booking, subject, bodyTemplate, log);
+            }
+
+            if (_settings.SendNotificationToClient)
+            {
+                NotifyClientBookingChanged(
+                    booking.UserId,
+                    $"GRANT_RANGE|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                    log
+                );
+            }
+
+
         }
     }
     public void HandleReleaseRange(
@@ -1688,7 +2013,7 @@ public List<BookingView> GetBookingViews()
             // Xác định trạng thái mới: nếu đang IN_USE -> COMPLETED, nếu APPROVED -> CANCELLED
             string newStatus = (booking.Status == "IN_USE") ? "COMPLETED" : "CANCELLED";
             booking.Status = newStatus;
-            booking.UpdatedAt = DateTime.Now;
+            booking.UpdatedAt = Now;
 
             log.WriteLine($"[RANGE_RELEASE] {clientId} {roomId} {slotStartId}-{slotEndId} -> {newStatus}");
 
@@ -1800,7 +2125,7 @@ public List<BookingView> GetBookingViews()
                 return false;
             }
 
-            var now = DateTime.Now;
+            var now = Now;
             if (now > booking.CheckinDeadline)
             {
                 error = "Đã quá thời gian check-in.";
@@ -1841,6 +2166,31 @@ public List<BookingView> GetBookingViews()
 
         log.WriteLine($"[GRANT] {nextClientId} -> {roomId}-{slotId} from queue on date {dateKey}");
         Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+
+        // Sau khi gửi GRANT cho client trong queue
+        if (_settings.SendEmailOnGrant)
+        {
+            var subject = "[Room booking] Booking của bạn đã được GRANT từ hàng chờ";
+            var bodyTemplate =
+                "Chào {FullName},\n\n" +
+                "Yêu cầu đặt phòng của bạn đã được GRANT (từ hàng chờ).\n" +
+                "- Phòng: {RoomId}\n" +
+                "- Ngày: {Date}\n" +
+                "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                "- Trạng thái: {Status}\n\n" +
+                "Vui lòng check-in trước hạn.";
+
+            SendEmailForBooking(booking, subject, bodyTemplate, log);
+        }
+
+        if (_settings.SendNotificationToClient)
+        {
+            NotifyClientBookingChanged(
+                booking.UserId,
+                $"GRANTED_FROM_QUEUE|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                log
+            );
+        }
     }
 
     public bool CompleteAndReleaseSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
@@ -1893,7 +2243,7 @@ public List<BookingView> GetBookingViews()
             }
 
             booking.Status = newStatus;
-            booking.UpdatedAt = DateTime.Now;
+            booking.UpdatedAt = Now;
 
             // =========================
             // 1) Nếu là booking RANGE
@@ -1942,6 +2292,7 @@ public List<BookingView> GetBookingViews()
             }
 
             log.WriteLine($"[COMPLETE] {booking.UserId} {roomId}-{slotId} ({dateKey}), status={booking.Status}");
+
             return true;
         }
     }
@@ -1982,12 +2333,76 @@ public List<BookingView> GetBookingViews()
         TextWriter log,
         out string error)
     {
-        // Dùng lại đúng logic CompleteAndReleaseSlot:
-        // - APPROVED  -> CANCELLED
-        // - IN_USE    -> COMPLETED
-        // Đồng thời cấp quyền cho người tiếp theo trong queue.
-        return CompleteAndReleaseSlot(date, roomId, slotId, log, out error);
+        error = "";
+
+        var dateKey = date.ToString("yyyy-MM-dd");
+        Guid? bookingIdToNotify = null;
+
+        // 1) Lấy ra BookingId đang giữ slot này (nếu có)
+        lock (_lock)
+        {
+            if (_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
+            {
+                var key = MakeKey(roomId, slotId);
+
+                if (slotsForDate.TryGetValue(key, out var slot) &&
+                    slot.CurrentBookingId.HasValue)
+                {
+                    bookingIdToNotify = slot.CurrentBookingId.Value;
+                }
+            }
+        }
+
+        // 2) Gọi lại logic cũ: COMPLETE & RELEASE
+        if (!CompleteAndReleaseSlot(date, roomId, slotId, log, out error))
+        {
+            return false;
+        }
+
+        // 3) Nếu có booking để notify thì lấy Booking ra và gửi email + notify
+        if (bookingIdToNotify.HasValue)
+        {
+            Booking? booking = null;
+
+            lock (_lock)
+            {
+                booking = _bookings
+                    .FirstOrDefault(b => b.BookingId == bookingIdToNotify.Value);
+            }
+
+            if (booking != null)
+            {
+                // Email FORCE RELEASE
+                if (_settings.SendEmailOnForceGrantRelease)
+                {
+                    var subject = "[Room booking] Booking của bạn đã bị FORCE RELEASE";
+                    var bodyTemplate =
+                        "Chào {FullName},\n\n" +
+                        "Admin đã FORCE RELEASE booking của bạn.\n" +
+                        "- Phòng: {RoomId}\n" +
+                        "- Ngày: {Date}\n" +
+                        "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                        "- Trạng thái: {Status}\n\n" +
+                        "Nếu có thắc mắc, vui lòng liên hệ quản trị.";
+
+                    SendEmailForBooking(booking, subject, bodyTemplate, log);
+                }
+
+                // Notify client (hiện tại chỉ log, sau này có thể gửi thật)
+                if (_settings.SendNotificationToClient)
+                {
+                    NotifyClientBookingChanged(
+                        booking.UserId,
+                        $"FORCE_RELEASE|{booking.BookingId}|{booking.RoomId}|{booking.SlotStartId}|{booking.SlotEndId}",
+                        log
+                    );
+                }
+            }
+        }
+
+        return true;
     }
+
 
     /// Tra cứu lịch 14 ca của 1 phòng trong 1 ngày
     public List<RoomDailySlotView> GetDailySchedule(DateTime date, string roomId, TextWriter log)
@@ -2454,7 +2869,65 @@ public List<BookingView> GetBookingViews()
         return FacultySet.Contains(faculty.Trim());
     }
 
+    private void SendEmailSafe(string to, string subject, string body, TextWriter log)
+    {
+        try
+        {
+            var smtp = _settings.Smtp;
+            if (string.IsNullOrWhiteSpace(smtp.Host) ||
+                string.IsNullOrWhiteSpace(smtp.Username) ||
+                string.IsNullOrWhiteSpace(smtp.Password) ||
+                string.IsNullOrWhiteSpace(to))
+            {
+                log.WriteLine("[EMAIL] Skip send: SMTP config or target email is empty.");
+                return;
+            }
 
+            using var client = new SmtpClient(smtp.Host, smtp.Port)
+            {
+                EnableSsl = smtp.EnableSsl,
+                Credentials = new NetworkCredential(smtp.Username, smtp.Password)
+            };
 
+            var from = new MailAddress(smtp.Username, smtp.FromEmail ?? "Room Booking Server");
+            var mail = new MailMessage(from, new MailAddress(to))
+            {
+                Subject = subject,
+                Body = body
+            };
+
+            client.Send(mail);
+            log.WriteLine($"[EMAIL] Sent to {to} | Subject={subject}");
+        }
+        catch (Exception ex)
+        {
+            log.WriteLine($"[EMAIL][ERROR] {ex.Message}");
+        }
+    }
+
+    private void SendEmailForBooking(Booking booking, string subject, string bodyTemplate, TextWriter log)
+    {
+        if (!_users.TryGetValue(booking.UserId, out var user) || string.IsNullOrWhiteSpace(user.Email))
+        {
+            log.WriteLine($"[EMAIL] Skip: user {booking.UserId} not found or email empty");
+            return;
+        }
+
+        var body = bodyTemplate
+            .Replace("{FullName}", user.FullName)
+            .Replace("{RoomId}", booking.RoomId)
+            .Replace("{Date}", booking.Date)
+            .Replace("{SlotStartId}", booking.SlotStartId)
+            .Replace("{SlotEndId}", booking.SlotEndId)
+            .Replace("{Status}", booking.Status);
+
+        SendEmailSafe(user.Email, subject, body, log);
+    }
+
+    private void NotifyClientBookingChanged(string userId, string message, TextWriter log)
+    {
+        // TODO: nếu bạn có map UserId -> clientId/NetworkStream thì lookup và Send(...)
+        log.WriteLine($"[NOTIFY] {userId} <- {message}");
+    }
 
 }

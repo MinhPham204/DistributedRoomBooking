@@ -118,6 +118,66 @@ namespace BookingServer
         public int TotalBookings { get; set; }
         public int NoShowCount { get; set; }
     }
+    /// Cấu hình 1 ca học (slot)
+    public class SlotTimeConfigRow
+    {
+        public int Index { get; set; }           // 1..14
+        public string SlotId { get; set; } = ""; // S1..S14
+        public string Start { get; set; } = "";  // "07:00"
+        public string End { get; set; } = "";    // "08:00"
+    }
+
+    /// Cấu hình SMTP/email
+    public class SmtpSettings
+    {
+        public string Host { get; set; } = "";
+        public int Port { get; set; } = 587;
+        public bool EnableSsl { get; set; } = true;
+        public string Username { get; set; } = "";
+        public string Password { get; set; } = "";
+        public string FromEmail { get; set; } = "";
+    }
+
+    /// Cấu hình chung cho server (Tab Settings)
+    public class AppSettings
+    {
+        public List<SlotTimeConfigRow> SlotTimes { get; set; } = new();
+
+        // Thời gian check-in deadline (phút)
+        public int CheckinDeadlineMinutes { get; set; } = 15;
+
+        // Bật/tắt gửi email
+        public bool SendEmailOnGrant { get; set; }
+        public bool SendEmailOnForceGrantRelease { get; set; }
+        public bool SendEmailOnNoShow { get; set; }
+
+        // Bật/tắt gửi notification cho client
+        public bool SendNotificationToClient { get; set; }
+
+        public SmtpSettings Smtp { get; set; } = new();
+
+        public static AppSettings CreateDefault()
+        {
+            var settings = new AppSettings();
+            var startBase = new TimeSpan(7, 0, 0); // bắt đầu từ 07:00
+
+            for (int i = 1; i <= 14; i++)
+            {
+                var s = startBase.Add(TimeSpan.FromHours(i - 1));
+                var e = s.Add(TimeSpan.FromHours(1));
+
+                settings.SlotTimes.Add(new SlotTimeConfigRow
+                {
+                    Index = i,
+                    SlotId = $"S{i}",
+                    Start = s.ToString(@"hh\:mm"),
+                    End = e.ToString(@"hh\:mm")
+                });
+            }
+
+            return settings;
+        }
+    }
 
     /// Snapshot dùng cho backup/restore
     public class SlotSnapshot

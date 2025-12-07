@@ -5,6 +5,7 @@ using System.Windows.Forms;
 using System.Net.Sockets;
 using System.Text;
 using System.Threading.Tasks;
+using System.Drawing.Drawing2D;
 
 // ĐẶT ALIAS RÕ RÀNG ĐỂ HẾT LỖI AMBIGUOUS TIMER
 using WinFormsTimer = System.Windows.Forms.Timer;
@@ -108,6 +109,7 @@ namespace BookingClient
 
         private readonly DemoUserInfo _currentUser;
         private readonly string _serverIp;
+        private TimeSpan _serverTimeOffset = TimeSpan.Zero;
 
         public MainClientForm(DemoUserInfo currentUser, string serverIp)
         {
@@ -151,50 +153,66 @@ namespace BookingClient
             };
             // Bạn có thể load 1 icon default ở đây nếu thích
             _panelHeader.Controls.Add(_picAvatar);
+            _picAvatar.SizeMode = PictureBoxSizeMode.StretchImage; // sau này nếu bạn có icon/ảnh
 
+            _picAvatar.Paint += (s, e) =>
+            {
+                var gp = new GraphicsPath();
+                gp.AddEllipse(0, 0, _picAvatar.Width - 1, _picAvatar.Height - 1);
+                _picAvatar.Region = new Region(gp);
+            };
+
+            // Tên + loại user (giữ nguyên)
             _lblNameWithType = new Label
             {
                 Left = 80,
                 Top = 10,
                 Width = 400,
-                Height = 25,
-                Font = new Font(Font.FontFamily, 11, FontStyle.Bold),
-                Text = $"{_currentUser.FullName} ({_currentUser.UserType})"
+                Font = new Font(FontFamily.GenericSansSerif, 11, FontStyle.Bold)
             };
             _panelHeader.Controls.Add(_lblNameWithType);
+            _lblNameWithType.Text = $"{_currentUser.FullName} ({_currentUser.UserType})";
 
-            string subText = "";
+            // Dòng phụ: StudentId/Class/Department hoặc LecturerId/Faculty + Email/Phone
+            _lblSubInfo = new Label
+            {
+                Left = 80,
+                Top = 35,
+                Width = 700,          // tăng rộng chút cho thoải mái
+                AutoSize = false
+            };
+            _panelHeader.Controls.Add(_lblSubInfo);
 
-            // Thông tin theo loại user
+            string subText;
             if (_currentUser.UserType == "Student")
             {
-                subText = $"MSSV: {_currentUser.StudentId} - Lớp: {_currentUser.Class} - Khoa: {_currentUser.Department}";
+                subText =
+                    $"StudentId: {_currentUser.StudentId} - Class: {_currentUser.Class} - Department: {_currentUser.Department}";
             }
             else if (_currentUser.UserType == "Lecturer")
             {
-                subText = $"Mã GV: {_currentUser.LecturerId} - Khoa: {_currentUser.Faculty}";
+                subText =
+                    $"LecturerId: {_currentUser.LecturerId} - Faculty: {_currentUser.Faculty}";
             }
-            else if (_currentUser.UserType == "Staff")
+            else
             {
-                subText = $"Nhân viên - Phòng/Ban: {_currentUser.Department}";
+                // Staff
+                subText = $"Staff - Department: {_currentUser.Department}";
             }
 
-            // Thông tin liên hệ chung (nếu có)
-            List<string> contactParts = new List<string>();
+            // Thông tin liên hệ chung
+            var contactParts = new List<string>();
             if (!string.IsNullOrWhiteSpace(_currentUser.Email))
-            {
                 contactParts.Add($"Email: {_currentUser.Email}");
-            }
             if (!string.IsNullOrWhiteSpace(_currentUser.Phone))
-            {
-                contactParts.Add($"ĐT: {_currentUser.Phone}");
-            }
+                contactParts.Add($"Phone: {_currentUser.Phone}");
 
             if (contactParts.Count > 0)
             {
-                // thêm sau cùng, cách nhau bằng " | "
-                subText += (subText.Length > 0 ? " | " : "") + string.Join(" - ", contactParts);
+                subText += " | " + string.Join(" - ", contactParts);
             }
+
+            _lblSubInfo.Text = subText;
 
 
             _lblSubInfo = new Label
@@ -219,7 +237,7 @@ namespace BookingClient
             // Left = Right - Width (sau khi form load thì Anchor sẽ tự co)
             _lblToday.Left = ClientSize.Width - _lblToday.Width - 20;
             _panelHeader.Controls.Add(_lblToday);
-            UpdateTodayLabel();
+            UpdateTodayLabel(DateTime.Now);
 
             _btnHeaderCheckConnect = new Button
             {
@@ -275,7 +293,8 @@ namespace BookingClient
             _timerClock = new WinFormsTimer { Interval = 1000 };
             _timerClock.Tick += (s, e) =>
             {
-                _lblRunningTime.Text = "Time: " + DateTime.Now.ToString("HH:mm:ss");
+                var now = DateTime.Now + _serverTimeOffset;
+                _lblRunningTime.Text = "Time: " + now.ToString("HH:mm:ss");
             };
             _timerClock.Start();
 
@@ -334,6 +353,8 @@ namespace BookingClient
             BuildScheduleTabUi();
             BuildNotificationsTabUi();
             BuildAccountTabUi();
+            // Khởi tạo thời gian header theo server
+            _ = InitHeaderTimeAsync();
         }
         private async Task HeaderCheckConnectAsync()
         {
@@ -373,12 +394,74 @@ namespace BookingClient
                 _lblHeaderConnectText.ForeColor = Color.Red;
             }
         }
-
-        private void UpdateTodayLabel()
+        private async Task<DateTime?> GetServerNowAsync()
         {
-            var now = DateTime.Now;
-            var thu = now.ToString("dddd"); // sau này nếu muốn tiếng Việt thì map thủ công
-            _lblToday.Text = $"Hôm nay: {now:dd/MM/yyyy} – {thu}";
+            try
+            {
+                using (var tcp = new TcpClient())
+                {
+                    await tcp.ConnectAsync(_serverIp, 5000);
+                    using (var stream = tcp.GetStream())
+                    {
+                        var data = Encoding.UTF8.GetBytes("GET_NOW\n");
+                        await stream.WriteAsync(data, 0, data.Length);
+
+                        var buffer = new byte[256];
+                        int read = await stream.ReadAsync(buffer, 0, buffer.Length);
+                        if (read <= 0) return null;
+
+                        var resp = Encoding.UTF8.GetString(buffer, 0, read).Trim();
+                        // Expect: NOW|yyyy-MM-dd HH:mm:ss
+                        if (!resp.StartsWith("NOW|"))
+                            return null;
+
+                        var payload = resp.Substring(4);
+                        if (DateTime.TryParse(payload, out var serverNow))
+                            return serverNow;
+
+                        return null;
+                    }
+                }
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        private string GetVietnameseWeekday(DayOfWeek dow)
+        {
+            switch (dow)
+            {
+                case DayOfWeek.Monday: return "Thứ 2";
+                case DayOfWeek.Tuesday: return "Thứ 3";
+                case DayOfWeek.Wednesday: return "Thứ 4";
+                case DayOfWeek.Thursday: return "Thứ 5";
+                case DayOfWeek.Friday: return "Thứ 6";
+                case DayOfWeek.Saturday: return "Thứ 7";
+                case DayOfWeek.Sunday: return "Chủ nhật";
+                default: return "";
+            }
+        }
+
+        private void UpdateTodayLabel(DateTime now)
+        {
+            var thu = GetVietnameseWeekday(now.DayOfWeek);
+            _lblToday.Text = $"Date {now:dd/MM/yyyy} – {thu}";
+        }
+        private async Task InitHeaderTimeAsync()
+        {
+            var serverNow = await GetServerNowAsync();
+            if (serverNow.HasValue)
+            {
+                _serverTimeOffset = serverNow.Value - DateTime.Now;
+                UpdateTodayLabel(serverNow.Value);
+            }
+            else
+            {
+                // fallback: dùng giờ máy nếu không gọi được server
+                _serverTimeOffset = TimeSpan.Zero;
+                UpdateTodayLabel(DateTime.Now);
+            }
         }
 
         // ================== 2.3. TAB TRANG CHỦ ==================
@@ -958,4 +1041,5 @@ namespace BookingClient
             }
         }
     }
+
 }

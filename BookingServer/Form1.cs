@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Linq;
 namespace BookingServer;
 
+using System.Net;
+using System.Net.Mail;
 public class Form1 : Form
 {
     // ===== Layout chính =====
@@ -147,6 +149,17 @@ public class Form1 : Form
     private NumericUpDown _numCheckinDeadlineMinutes = null!;
     private CheckBox _chkSendEmailForce = null!;
     private CheckBox _chkSendEmailNoShow = null!;
+    private CheckBox _chkNotifyClient = null!;
+
+    // SMTP controls
+    private TextBox _txtSmtpHost = null!;
+    private NumericUpDown _numSmtpPort = null!;
+    private CheckBox _chkSmtpSsl = null!;
+    private TextBox _txtSmtpUser = null!;
+    private TextBox _txtSmtpPassword = null!;
+    private TextBox _txtSmtpFrom = null!;
+
+    private Button _btnSettingsSave = null!;
 
     // ===== Tab Log =====
     private TextBox _txtLog = null!;   // giữ tên cũ, chỉ đổi parent sang tab Log
@@ -306,7 +319,7 @@ public class Form1 : Form
         var lblRoom = new Label
         {
             Left = 10,
-            Top = 12,
+            Top = 15,
             Width = 60,
             Text = "Phòng:"
         };
@@ -315,17 +328,16 @@ public class Form1 : Form
         _cbRoomFilter = new ComboBox
         {
             Left = 70,
-            Top = 8,
+            Top = 11,
             Width = 120,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        // TODO: sau này load list phòng từ _state.GetRooms()
         pnlFilter.Controls.Add(_cbRoomFilter);
 
         var lblDate = new Label
         {
             Left = 210,
-            Top = 12,
+            Top = 15,
             Width = 50,
             Text = "Ngày:"
         };
@@ -334,7 +346,7 @@ public class Form1 : Form
         _dtRoomFilterDate = new DateTimePicker
         {
             Left = 260,
-            Top = 8,
+            Top = 11,
             Width = 120,
             Format = DateTimePickerFormat.Custom,
             CustomFormat = "yyyy-MM-dd"
@@ -344,12 +356,20 @@ public class Form1 : Form
         _btnRoomFilterSearch = new Button
         {
             Left = 390,
-            Top = 8,
+            Top = 11,
             Width = 80,
             Text = "Xem"
         };
-        // TODO: sau này gắn logic: lấy RoomDailySlotView từ ServerState và bind
         pnlFilter.Controls.Add(_btnRoomFilterSearch);
+        _btnRoomFilterSearch.Click += BtnRoomFilterSearch_Click;
+
+        // ===== Panel chứa grid, có padding để hạ grid xuống =====
+        var pnlRoomDaily = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(0, 5, 0, 0)  // Top = 5px -> tạo khoảng trống cho header
+        };
+        _tabLeftByRoom.Controls.Add(pnlRoomDaily);
 
         _gridRoomDaily = new DataGridView
         {
@@ -357,10 +377,12 @@ public class Form1 : Form
             ReadOnly = true,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
-            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
         };
-        _tabLeftByRoom.Controls.Add(_gridRoomDaily);
+        pnlRoomDaily.Controls.Add(_gridRoomDaily);
     }
+
     private void BuildRightTabs()
     {
         _tabRight = new TabControl
@@ -1017,6 +1039,27 @@ public class Form1 : Form
             else if (_cbFixedRoom.Items.Count > 0)
             {
                 _cbFixedRoom.SelectedIndex = 0;
+            }
+        }
+
+        // ====== FILL COMBO "Theo phòng" (_cbRoomFilter) ======
+        if (_cbRoomFilter != null)
+        {
+            var currentRoom = _cbRoomFilter.SelectedItem?.ToString();
+
+            _cbRoomFilter.Items.Clear();
+            foreach (var r in allRooms)
+            {
+                _cbRoomFilter.Items.Add(r.RoomId);
+            }
+
+            if (!string.IsNullOrEmpty(currentRoom) && _cbRoomFilter.Items.Contains(currentRoom))
+            {
+                _cbRoomFilter.SelectedItem = currentRoom;
+            }
+            else if (_cbRoomFilter.Items.Count > 0)
+            {
+                _cbRoomFilter.SelectedIndex = 0;
             }
         }
     }
@@ -1931,7 +1974,7 @@ public class Form1 : Form
         using var dlg = new SaveFileDialog
         {
             Filter = "CSV file (*.csv)|*.csv",
-            FileName = $"Booking_{DateTime.Now:yyyyMMdd_HHmmss}.csv"
+            FileName = $"Booking_{_state.Now:yyyyMMdd_HHmmss}.csv"
         };
 
         if (dlg.ShowDialog(this) != DialogResult.OK)
@@ -2002,7 +2045,7 @@ public class Form1 : Form
         using var dlg = new SaveFileDialog
         {
             Filter = "Text file (*.txt)|*.txt|All files (*.*)|*.*",
-            FileName = $"Booking_{DateTime.Now:yyyyMMdd_HHmmss}.txt"
+            FileName = $"Booking_{_state.Now:yyyyMMdd_HHmmss}.txt"
         };
 
         if (dlg.ShowDialog(this) != DialogResult.OK)
@@ -2010,7 +2053,7 @@ public class Form1 : Form
 
         var sb = new StringBuilder();
         sb.AppendLine("BOOKING REPORT");
-        sb.AppendLine($"Generated at: {DateTime.Now:dd/MM/yyyy HH:mm:ss}");
+        sb.AppendLine($"Generated at: {_state.Now:dd/MM/yyyy HH:mm:ss}");
         sb.AppendLine(new string('=', 80));
 
         foreach (var b in data)
@@ -2040,7 +2083,7 @@ public class Form1 : Form
         var pnlFilter = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 45
+            Height = 55
         };
         _tabStatistics.Controls.Add(pnlFilter);
 
@@ -2261,9 +2304,85 @@ public class Form1 : Form
     }
 
 
+    // private void BuildTabSettings()
+    // {
+    //     // Group: Cấu hình ca học
+    //     var grpSlots = new GroupBox
+    //     {
+    //         Text = "Slot time configuration",
+    //         Left = 10,
+    //         Top = 10,
+    //         Width = 540,
+    //         Height = 540
+    //     };
+    //     _tabSettings.Controls.Add(grpSlots);
+
+    //     _gridSlotConfig = new DataGridView
+    //     {
+    //         Dock = DockStyle.Fill,
+    //         AllowUserToAddRows = false,
+    //         AllowUserToDeleteRows = false,
+    //         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+    //     };
+    //     // TODO: bind 14 dòng: Ca, StartTime, EndTime
+    //     grpSlots.Controls.Add(_gridSlotConfig);
+
+    //     // Group: General settings
+    //     var grpGeneral = new GroupBox
+    //     {
+    //         Text = "General settings",
+    //         Left = 560,
+    //         Top = 10,
+    //         Width = 300,
+    //         Height = 200
+    //     };
+    //     _tabSettings.Controls.Add(grpGeneral);
+
+    //     var lblDeadline = new Label
+    //     {
+    //         Left = 10,
+    //         Top = 25,
+    //         Width = 200,
+    //         Text = "Check-in deadline (minutes):"
+    //     };
+    //     _numCheckinDeadlineMinutes = new NumericUpDown
+    //     {
+    //         Left = 210,
+    //         Top = 22,
+    //         Width = 60,
+    //         Minimum = 0,
+    //         Maximum = 120,
+    //         Value = 15
+    //     };
+
+    //     _chkSendEmailForce = new CheckBox
+    //     {
+    //         Left = 10,
+    //         Top = 55,
+    //         Width = 260,
+    //         Text = "Send email on FORCE_GRANT/RELEASE"
+    //     };
+
+    //     _chkSendEmailNoShow = new CheckBox
+    //     {
+    //         Left = 10,
+    //         Top = 80,
+    //         Width = 260,
+    //         Text = "Send email on NO_SHOW"
+    //     };
+
+    //     // TODO: nút Save / Load config nếu cần
+    //     grpGeneral.Controls.AddRange(new Control[]
+    //     {
+    //     lblDeadline, _numCheckinDeadlineMinutes,
+    //     _chkSendEmailForce, _chkSendEmailNoShow
+    //     });
+    // }
     private void BuildTabSettings()
     {
-        // Group: Cấu hình ca học
+        _tabSettings.Controls.Clear();
+
+        // ===== Group: Cấu hình ca học =====
         var grpSlots = new GroupBox
         {
             Text = "Slot time configuration",
@@ -2281,17 +2400,16 @@ public class Form1 : Form
             AllowUserToDeleteRows = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
         };
-        // TODO: bind 14 dòng: Ca, StartTime, EndTime
         grpSlots.Controls.Add(_gridSlotConfig);
 
-        // Group: General settings
+        // ===== Group: General settings =====
         var grpGeneral = new GroupBox
         {
             Text = "General settings",
             Left = 560,
             Top = 10,
             Width = 300,
-            Height = 200
+            Height = 160
         };
         _tabSettings.Controls.Add(grpGeneral);
 
@@ -2328,13 +2446,271 @@ public class Form1 : Form
             Text = "Send email on NO_SHOW"
         };
 
-        // TODO: nút Save / Load config nếu cần
+        _chkNotifyClient = new CheckBox
+        {
+            Left = 10,
+            Top = 105,
+            Width = 260,
+            Text = "Send notification to client"
+        };
+
         grpGeneral.Controls.AddRange(new Control[]
         {
-        lblDeadline, _numCheckinDeadlineMinutes,
-        _chkSendEmailForce, _chkSendEmailNoShow
+            lblDeadline, _numCheckinDeadlineMinutes,
+            _chkSendEmailForce, _chkSendEmailNoShow, _chkNotifyClient
         });
+
+        // ===== Group: SMTP settings =====
+        var grpSmtp = new GroupBox
+        {
+            Text = "SMTP / Email server",
+            Left = 560,
+            Top = 180,
+            Width = 300,
+            Height = 220
+        };
+        _tabSettings.Controls.Add(grpSmtp);
+
+        var lblHost = new Label { Left = 10, Top = 25, Width = 80, Text = "Host:" };
+        _txtSmtpHost = new TextBox { Left = 90, Top = 22, Width = 180 };
+
+        var lblPort = new Label { Left = 10, Top = 55, Width = 80, Text = "Port:" };
+        _numSmtpPort = new NumericUpDown
+        {
+            Left = 90,
+            Top = 52,
+            Width = 80,
+            Minimum = 1,
+            Maximum = 65535,
+            Value = 587
+        };
+
+        _chkSmtpSsl = new CheckBox
+        {
+            Left = 180,
+            Top = 54,
+            Width = 80,
+            Text = "SSL"
+        };
+
+        var lblUser = new Label { Left = 10, Top = 85, Width = 80, Text = "User:" };
+        _txtSmtpUser = new TextBox { Left = 90, Top = 82, Width = 180 };
+
+        var lblPwd = new Label { Left = 10, Top = 115, Width = 80, Text = "Password:" };
+        _txtSmtpPassword = new TextBox
+        {
+            Left = 90,
+            Top = 112,
+            Width = 180,
+            UseSystemPasswordChar = true
+        };
+
+        var lblFrom = new Label { Left = 10, Top = 145, Width = 80, Text = "From:" };
+        _txtSmtpFrom = new TextBox { Left = 90, Top = 142, Width = 180 };
+
+        grpSmtp.Controls.AddRange(new Control[]
+        {
+            lblHost, _txtSmtpHost,
+            lblPort, _numSmtpPort, _chkSmtpSsl,
+            lblUser, _txtSmtpUser,
+            lblPwd, _txtSmtpPassword,
+            lblFrom, _txtSmtpFrom
+        });
+
+        // ===== Nút Save =====
+        _btnSettingsSave = new Button
+        {
+            Text = "Save settings",
+            Left = 560,
+            Top = 540,   // bên dưới nhóm Time một chút
+            Width = 150,
+            Height = 30
+        };
+        _btnSettingsSave.Click += BtnSettingsSave_Click;
+        _tabSettings.Controls.Add(_btnSettingsSave);
+
+        // ===== Group: Demo time (đặt dưới SMTP) =====
+        var grpTime = new GroupBox
+        {
+            Text = "Demo time",
+            Left = 560,
+            Top = 410,   // ngay dưới grpSmtp (top 180 + height 220 = 400, cộng thêm 10px)
+            Width = 300,
+            Height = 120
+        };
+        _tabSettings.Controls.Add(grpTime);
+
+        var dtDemo = new DateTimePicker
+        {
+            Format = DateTimePickerFormat.Custom,
+            CustomFormat = "dd/MM/yyyy HH:mm",
+            Width = 160,
+            Left = 10,
+            Top = 25
+        };
+        grpTime.Controls.Add(dtDemo);
+
+        var btnUseDemo = new Button
+        {
+            Text = "Use demo time",
+            Left = 180,
+            Top = 22,
+            Width = 110
+        };
+        grpTime.Controls.Add(btnUseDemo);
+
+        var btnUseSystem = new Button
+        {
+            Text = "Use system time",
+            Left = 180,
+            Top = 55,
+            Width = 110
+        };
+        grpTime.Controls.Add(btnUseSystem);
+
+        btnUseDemo.Click += (_, __) =>
+        {
+            var logger = new UiLogger(this);
+            _state.SetDemoNow(dtDemo.Value, logger);
+        };
+
+        btnUseSystem.Click += (_, __) =>
+        {
+            var logger = new UiLogger(this);
+            _state.ResetDemoNow(logger);
+        };
+
+        // ===== Load dữ liệu từ ServerState vào UI =====
+        LoadSettingsToUi();
     }
+    private void LoadSettingsToUi()
+    {
+        var s = _state.Settings ?? AppSettings.CreateDefault();
+
+        // ---- Grid slot config: 14 dòng ----
+        _gridSlotConfig.AutoGenerateColumns = false;
+        _gridSlotConfig.Columns.Clear();
+        _gridSlotConfig.Rows.Clear();
+
+        var colIndex = new DataGridViewTextBoxColumn
+        {
+            Name = "colIndex",
+            HeaderText = "Ca",
+            Width = 40,
+            ReadOnly = true
+        };
+        var colStart = new DataGridViewTextBoxColumn
+        {
+            Name = "colStart",
+            HeaderText = "Start",
+            Width = 80
+        };
+        var colEnd = new DataGridViewTextBoxColumn
+        {
+            Name = "colEnd",
+            HeaderText = "End",
+            Width = 80
+        };
+
+        _gridSlotConfig.Columns.AddRange(colIndex, colStart, colEnd);
+
+        var list = (s.SlotTimes != null && s.SlotTimes.Count == 14)
+            ? s.SlotTimes.OrderBy(r => r.Index).ToList()
+            : AppSettings.CreateDefault().SlotTimes;
+
+        foreach (var row in list)
+        {
+            _gridSlotConfig.Rows.Add(row.Index, row.Start, row.End);
+        }
+
+        // ---- General settings ----
+        if (s.CheckinDeadlineMinutes >= 0 && s.CheckinDeadlineMinutes <= 120)
+            _numCheckinDeadlineMinutes.Value = s.CheckinDeadlineMinutes;
+        else
+            _numCheckinDeadlineMinutes.Value = 15;
+
+        _chkSendEmailForce.Checked = s.SendEmailOnForceGrantRelease;
+        _chkSendEmailNoShow.Checked = s.SendEmailOnNoShow;
+        _chkNotifyClient.Checked = s.SendNotificationToClient;
+
+        // ---- SMTP ----
+        _txtSmtpHost.Text = s.Smtp?.Host ?? "";
+        _numSmtpPort.Value = s.Smtp?.Port > 0 ? s.Smtp.Port : 587;
+        _chkSmtpSsl.Checked = s.Smtp?.EnableSsl ?? true;
+        _txtSmtpUser.Text = s.Smtp?.Username ?? "";
+        _txtSmtpPassword.Text = s.Smtp?.Password ?? "";
+        _txtSmtpFrom.Text = s.Smtp?.FromEmail ?? "";
+    }
+    private void BtnSettingsSave_Click(object? sender, EventArgs e)
+    {
+        var newSettings = new AppSettings();
+
+        // 1) đọc 14 dòng slot từ grid
+        if (_gridSlotConfig.Rows.Count < 14)
+        {
+            MessageBox.Show("Slot config cần đủ 14 dòng (S1..S14).");
+            return;
+        }
+
+        for (int i = 0; i < 14; i++)
+        {
+            var row = _gridSlotConfig.Rows[i];
+
+            var idxObj = row.Cells["colIndex"].Value;
+            int index = 0;
+            if (idxObj == null || !int.TryParse(idxObj.ToString(), out index))
+                index = i + 1;
+
+            string startStr = row.Cells["colStart"].Value?.ToString() ?? "";
+            string endStr = row.Cells["colEnd"].Value?.ToString() ?? "";
+
+            if (!TimeSpan.TryParse(startStr, out var start) ||
+                !TimeSpan.TryParse(endStr, out var end))
+            {
+                MessageBox.Show($"Dòng {index}: thời gian phải dạng HH:mm (vd 07:00).");
+                return;
+            }
+
+            if (end <= start)
+            {
+                MessageBox.Show($"Dòng {index}: EndTime phải sau StartTime.");
+                return;
+            }
+
+            newSettings.SlotTimes.Add(new SlotTimeConfigRow
+            {
+                Index = index,
+                SlotId = $"S{index}",
+                Start = start.ToString(@"hh\:mm"),
+                End = end.ToString(@"hh\:mm")
+            });
+        }
+
+        // 2) general
+        newSettings.CheckinDeadlineMinutes = (int)_numCheckinDeadlineMinutes.Value;
+        newSettings.SendEmailOnForceGrantRelease = _chkSendEmailForce.Checked;
+        newSettings.SendEmailOnNoShow = _chkSendEmailNoShow.Checked;
+        newSettings.SendNotificationToClient = _chkNotifyClient.Checked;
+
+        // 3) SMTP
+        newSettings.Smtp.Host = _txtSmtpHost.Text.Trim();
+        newSettings.Smtp.Port = (int)_numSmtpPort.Value;
+        newSettings.Smtp.EnableSsl = _chkSmtpSsl.Checked;
+        newSettings.Smtp.Username = _txtSmtpUser.Text.Trim();
+        newSettings.Smtp.Password = _txtSmtpPassword.Text;    // tạm lưu plain text
+        newSettings.Smtp.FromEmail = _txtSmtpFrom.Text.Trim();
+
+        _state.UpdateSettings(newSettings);
+
+        MessageBox.Show(
+            "Đã lưu Settings.\nThời gian ca & deadline mới sẽ áp dụng cho các booking mới.",
+            "Settings",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information
+        );
+    }
+
+
     private void BuildTabLog()
     {
         _txtLog = new TextBox
@@ -2378,7 +2754,7 @@ public class Form1 : Form
     private void NoShowTimer_Tick(object? sender, EventArgs e)
     {
         // quét NO_SHOW cho ngày đang chọn trên DateTimePicker
-        _state.RunNoShowSweep(DateTime.Now, new UiLogger(this));  // ✅
+        _state.RunNoShowSweep(_state.Now, new UiLogger(this));  // ✅
         RefreshSlotsSafe();
     }
 
@@ -2407,30 +2783,105 @@ public class Form1 : Form
                     switch (cmd)
                     {
                         case "LOGIN":
-                            if (parts.Length != 3)
                             {
-                                await SendAsync(stream, "INFO|LOGIN_FAIL|Invalid format\n");
-                                break;
-                            }
-                            {
+                                // LOGIN|userId|password
+                                if (parts.Length < 3)
+                                {
+                                    await SendAsync(stream, "LOGIN_FAIL|INVALID_FORMAT|Invalid LOGIN format\n");
+                                    break;
+                                }
+
                                 var userId = parts[1];
                                 var password = parts[2];
 
-                                var (success, userType, error) = _state.ValidateUserCredentials(userId, password);
-                                if (!success || userType == null)
+                                var result = _state.ValidateUserCredentials(userId, password);
+
+                                if (!result.Success)
                                 {
-                                    await SendAsync(stream, $"INFO|LOGIN_FAIL|{error}\n");
-                                    Log($"[LOGIN FAIL] {userId} - {error}");
+                                    string reasonCode;
+                                    switch (result.Error)
+                                    {
+                                        case "User not found":
+                                            reasonCode = "USER_NOT_FOUND";
+                                            break;
+                                        case "User inactive":
+                                            reasonCode = "USER_INACTIVE";
+                                            break;
+                                        case "Invalid password":
+                                            reasonCode = "INVALID_PASSWORD";
+                                            break;
+                                        default:
+                                            reasonCode = "ERROR";
+                                            break;
+                                    }
+
+                                    await SendAsync(stream, $"LOGIN_FAIL|{reasonCode}|{result.Error}\n");
+                                    break;
                                 }
-                                else
+
+                                // Lấy thêm thông tin user để trả về cho client
+                                if (!_state.UsersInfo.TryGetValue(userId, out var user))
                                 {
-                                    clientId = userId;
-                                    currentUserType = userType;
-                                    await SendAsync(stream, $"INFO|LOGIN_OK|{userType}\n");
-                                    Log($"[LOGIN OK] {userId} ({userType})");
+                                    await SendAsync(stream, "LOGIN_FAIL|ERROR|User data not found\n");
+                                    break;
                                 }
+
+                                // Lưu lại clientId và loại user cho connection này
+                                clientId = user.UserId;
+                                currentUserType = user.UserType;
+
+                                // LOGIN_OK|UserId|UserType|FullName|Email|Phone|StudentId|Class|Department|LecturerId|Faculty
+                                var response =
+                                    $"LOGIN_OK|{user.UserId}|{user.UserType}|{user.FullName}|" +
+                                    $"{user.Email}|{user.Phone}|" +
+                                    $"{user.StudentId}|{user.Class}|{user.Department}|" +
+                                    $"{user.LecturerId}|{user.Faculty}\n";
+
+                                await SendAsync(stream, response);
+                                break;
                             }
-                            break;
+
+                        case "FORGOT_PASSWORD":
+                            {
+                                // FORGOT_PASSWORD|email
+                                if (parts.Length < 2)
+                                {
+                                    await SendAsync(stream, "FORGOT_FAIL|INVALID_FORMAT|Invalid FORGOT_PASSWORD format\n");
+                                    break;
+                                }
+
+                                var email = parts[1];
+
+                                // tìm user theo email (case-insensitive)
+
+                                var user = _state.FindUserByEmail(email); if (user == null)
+                                {
+                                    await SendAsync(stream, "FORGOT_FAIL|EMAIL_NOT_FOUND|Email not found\n");
+                                    break;
+                                }
+
+                                // sinh mật khẩu mới
+                                var newPassword = GenerateRandomPassword(10);
+
+                                // hash và lưu vào PasswordHash
+                                var hashed = BCrypt.Net.BCrypt.HashPassword(newPassword);
+                                user.PasswordHash = hashed;
+
+                                // gửi email
+                                try
+                                {
+                                    SendResetEmail(user.Email, user.FullName, newPassword);
+                                }
+                                catch (Exception ex)
+                                {
+                                    await SendAsync(stream, $"FORGOT_FAIL|SEND_MAIL_ERROR|{ex.Message}\n");
+                                    break;
+                                }
+
+                                await SendAsync(stream, "FORGOT_OK|Mật khẩu mới đã được gửi tới email của bạn.\n");
+                                break;
+                            }
+
 
                         case "REQUEST":
                             if (parts.Length != 4)
@@ -2586,6 +3037,14 @@ public class Form1 : Form
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid RELEASE_RANGE\n");
                                 }
+                                break;
+                            }
+
+                        case "GET_NOW":
+                            {
+                                // Lấy thời gian theo ServerState.Now (có thể là demo time hoặc system time)
+                                var now = _state.Now;
+                                await SendAsync(stream, $"NOW|{now:yyyy-MM-dd HH:mm:ss}\n");
                                 break;
                             }
                         case "PING":
@@ -3393,6 +3852,48 @@ public class Form1 : Form
             _cbRoomStatus.SelectedItem = room.Status;
         }
     }
+    private static string GenerateRandomPassword(int length)
+    {
+        const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        var rnd = new Random();
+        var buffer = new char[length];
+        for (int i = 0; i < length; i++)
+        {
+            buffer[i] = chars[rnd.Next(chars.Length)];
+        }
+        return new string(buffer);
+    }
+
+    private void SendResetEmail(string toEmail, string fullName, string newPassword)
+    {
+        // CẤU HÌNH: nên để các giá trị này trong file config / appsettings
+        var fromEmail = "n22dccn145@student.ptithcm.edu.vn";           // TODO: đổi thành email gửi thật
+        var displayName = "AE PTIT";     // tên hiển thị
+        var appPassword = "bouh lzvi nrty cyhc";       // TODO: app password (không phải mật khẩu thường)
+
+        var subject = "Mật khẩu mới cho tài khoản đặt phòng";
+        var body =
+            $"Xin chào {fullName},\n\n" +
+            "Hệ thống đã khôi phục mật khẩu cho tài khoản của bạn.\n\n" +
+            $"Mật khẩu mới: {newPassword}\n\n" +
+            "Vui lòng đăng nhập và đổi mật khẩu ngay sau khi sử dụng.\n\n" +
+            "Trân trọng,\n" +
+            "Hệ thống đặt phòng học.";
+
+        var msg = new MailMessage();
+        msg.From = new MailAddress(fromEmail, displayName);
+        msg.To.Add(new MailAddress(toEmail));
+        msg.Subject = subject;
+        msg.Body = body;
+        msg.IsBodyHtml = false;
+
+        using (var client = new SmtpClient("smtp.gmail.com", 587))
+        {
+            client.EnableSsl = true;
+            client.Credentials = new NetworkCredential(fromEmail, appPassword);
+            client.Send(msg);
+        }
+    }
 
     private void BtnFixedApply_Click(object? sender, EventArgs e)
     {
@@ -3736,6 +4237,51 @@ public class Form1 : Form
 
         MessageBox.Show("Xoá user thành công.");
         RefreshUserGrid();
+    }
+    private void BtnRoomFilterSearch_Click(object? sender, EventArgs e)
+    {
+        var roomId = _cbRoomFilter.SelectedItem?.ToString();
+        if (string.IsNullOrEmpty(roomId))
+        {
+            MessageBox.Show(this, "Hãy chọn phòng.", "Theo phòng",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        var date = _dtRoomFilterDate.Value.Date;
+
+        var logger = new UiLogger(this);
+        var list = _state.GetDailySchedule(date, roomId, logger);
+
+        // Cấu hình cột cho grid nếu chưa cấu hình
+        _gridRoomDaily.AutoGenerateColumns = false;
+        if (_gridRoomDaily.Columns.Count == 0)
+        {
+            _gridRoomDaily.Columns.Clear();
+
+            DataGridViewTextBoxColumn AddCol(string prop, string header, int width = 0)
+            {
+                var col = new DataGridViewTextBoxColumn
+                {
+                    DataPropertyName = prop,
+                    HeaderText = header,
+                    Name = prop,
+                    ReadOnly = true
+                };
+                if (width > 0) col.Width = width;
+                _gridRoomDaily.Columns.Add(col);
+                return col;
+            }
+
+            AddCol(nameof(RoomDailySlotView.SlotId), "Slot", 60);
+            AddCol(nameof(RoomDailySlotView.TimeRange), "Time range", 120);
+            AddCol(nameof(RoomDailySlotView.Status), "Status", 80);
+            AddCol(nameof(RoomDailySlotView.UserId), "UserId", 100);
+            AddCol(nameof(RoomDailySlotView.FullName), "FullName", 150);
+            AddCol(nameof(RoomDailySlotView.BookingStatus), "BookingStatus", 100);
+        }
+
+        _gridRoomDaily.DataSource = list;
     }
 
 }
