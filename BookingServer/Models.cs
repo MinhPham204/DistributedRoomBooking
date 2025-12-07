@@ -69,13 +69,21 @@ namespace BookingServer
         public string UserId { get; set; } = "";
         public string FullName { get; set; } = "";
         public string UserType { get; set; } = "";
+        public string Email { get; set; } = "";
+        public string Phone { get; set; } = "";
 
         public string RoomId { get; set; } = "";
         public string Date { get; set; } = "";
         public string SlotStartId { get; set; } = "";
         public string SlotEndId { get; set; } = "";
-        public string Status { get; set; } = "";
 
+        public string TimeRange { get; set; } = ""; // 07:00-09:00
+        public bool IsRange { get; set; }           // true nếu là đặt range
+
+        public string Purpose { get; set; } = "";
+        public string Status { get; set; } = "";
+        public DateTime? CheckinDeadline { get; set; }
+        public DateTime? CheckinTime { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime UpdatedAt { get; set; }
     }

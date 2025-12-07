@@ -25,6 +25,7 @@ class SlotState
     public string? EventNote { get; set; }
 
     public Queue<(string clientId, NetworkStream stream)> WaitingQueue { get; } = new();
+
 }
 
 // Dùng để hiển thị lên DataGridView trên UI server
@@ -76,6 +77,15 @@ class ServerState
     public IReadOnlyDictionary<string, RoomInfo> RoomsInfo => _rooms;
     public IReadOnlyDictionary<string, UserInfo> UsersInfo => _users;
     public IReadOnlyList<Booking> Bookings => _bookings;
+
+    private static readonly string[] FacultyList =
+{
+        "CNTT2", "IOT2", "MKT2", "CNDPT2",
+        "KT2", "DTVT2", "QTKD2", "ATTT2"
+    };
+
+    private static readonly HashSet<string> FacultySet =
+        new HashSet<string>(FacultyList, StringComparer.OrdinalIgnoreCase);
 
     // Constructor: seed dữ liệu demo
     public ServerState()
@@ -380,6 +390,74 @@ class ServerState
             return true;
         }
     }
+    public bool CreateFixedWeeklyClassSchedule(
+        string subjectCode,
+        string subjectName,
+        string className,
+        string roomId,
+        DayOfWeek dayOfWeek,
+        string slotStartId,
+        string slotEndId,
+        DateTime fromDate,
+        DateTime toDate,
+        TextWriter log,
+        out string error)
+    {
+        error = "";
+
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            error = "RoomId không được để trống.";
+            return false;
+        }
+
+        if (fromDate.Date > toDate.Date)
+        {
+            error = "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc.";
+            return false;
+        }
+
+        int startIdx = ParseSlotIndex(slotStartId);
+        int endIdx = ParseSlotIndex(slotEndId);
+
+        if (startIdx <= 0 || endIdx <= 0 || startIdx > endIdx || endIdx > SlotCount)
+        {
+            error = "Khoảng ca học không hợp lệ (slot start / end).";
+            return false;
+        }
+
+        // Ghi chú hiển thị trên Event lock
+        string note = $"{subjectCode} - {subjectName} ({className})".Trim();
+        if (string.IsNullOrWhiteSpace(note))
+            note = "Lịch môn học cố định";
+
+        var current = fromDate.Date;
+
+        while (current <= toDate.Date)
+        {
+            if (current.DayOfWeek == dayOfWeek)
+            {
+                var dateKey = current.ToString("yyyy-MM-dd");
+                log.WriteLine($"[FIXED_SCHEDULE] Apply {note} {roomId} {slotStartId}-{slotEndId} on {dateKey}");
+
+                for (int idx = startIdx; idx <= endIdx; idx++)
+                {
+                    var slotId = $"S{idx}"; // dùng đúng format SlotId
+
+                    // Dùng lại logic lock event hiện có
+                    if (!LockSlotForEvent(current, roomId, slotId, note, log, out var err))
+                    {
+                        error = $"Không thể khóa {roomId}-{slotId} vào ngày {dateKey}: {err}";
+                        return false;
+                    }
+                }
+            }
+
+            current = current.AddDays(1);
+        }
+
+        return true;
+    }
 
     public bool CreateUser(UserInfo newUser, string passwordPlain, out string error)
     {
@@ -397,11 +475,142 @@ class ServerState
             return false;
         }
 
+        // 👉 Validate các trường unique: Email / Phone / MSSV / Mã GV
+        if (!ValidateUserUniqueFields(newUser, ignoreUserId: null, out error))
+        {
+            return false;
+        }
+
+        // Validate theo loại user
+        if (string.Equals(newUser.UserType, "Student", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(newUser.StudentId))
+            {
+                error = "StudentId (MSSV) is required for Student";
+                return false;
+            }
+
+            if (!IsValidFaculty(newUser.Department))
+            {
+                error = "Khoa (Department) không hợp lệ. Hãy chọn trong danh sách CNTT2, IOT2, ...";
+                return false;
+            }
+
+            // Student không dùng LecturerId
+            newUser.LecturerId = "";
+            newUser.Faculty = "";
+        }
+        else if (string.Equals(newUser.UserType, "Lecturer", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(newUser.LecturerId))
+            {
+                error = "LecturerId (Mã GV) is required for Lecturer";
+                return false;
+            }
+
+            if (!IsValidFaculty(newUser.Faculty))
+            {
+                error = "Faculty không hợp lệ. Hãy chọn trong danh sách CNTT2, IOT2, ...";
+                return false;
+            }
+
+            // Lecturer không dùng StudentId
+            newUser.StudentId = "";
+            newUser.Department = "";
+        }
+        else
+        {
+            // Staff: cho phép không có StudentId / LecturerId, khoa không bắt buộc
+            newUser.StudentId = "";
+            newUser.LecturerId = "";
+        }
+
         newUser.PasswordHash = BCryptNet.HashPassword(passwordPlain);
         newUser.IsActive = true;
 
         _users[newUser.UserId] = newUser;
         return true;
+    }
+    // ====== ROOM CRUD ======
+    public bool CreateRoom(RoomInfo room, out string error)
+    {
+        error = "";
+
+        if (room == null)
+        {
+            error = "Room is null";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(room.RoomId))
+        {
+            error = "RoomId is required";
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (_rooms.ContainsKey(room.RoomId))
+            {
+                error = $"Room {room.RoomId} already exists.";
+                return false;
+            }
+
+            _rooms[room.RoomId] = room;
+            return true;
+        }
+    }
+
+    public bool UpdateRoom(RoomInfo room, out string error)
+    {
+        error = "";
+
+        if (room == null)
+        {
+            error = "Room is null";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(room.RoomId))
+        {
+            error = "RoomId is required";
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (!_rooms.ContainsKey(room.RoomId))
+            {
+                error = $"Room {room.RoomId} not found.";
+                return false;
+            }
+
+            _rooms[room.RoomId] = room;
+            return true;
+        }
+    }
+
+    public bool DeleteRoom(string roomId, out string error)
+    {
+        error = "";
+
+        if (string.IsNullOrWhiteSpace(roomId))
+        {
+            error = "RoomId is required";
+            return false;
+        }
+
+        lock (_lock)
+        {
+            if (!_rooms.ContainsKey(roomId))
+            {
+                error = $"Room {roomId} not found.";
+                return false;
+            }
+
+            _rooms.Remove(roomId);
+            return true;
+        }
     }
 
     // Chuyển "S3" -> index 3
@@ -874,38 +1083,64 @@ class ServerState
         log.WriteLine($"[BOOKING] {booking.BookingId} -> {newStatus} for {roomId}-{slotId}");
     }
 
-    public List<BookingView> GetBookingViews()
+// BookingServer/ServerState.cs
+
+public List<BookingView> GetBookingViews()
+{
+    lock (_lock)
     {
-        lock (_lock)
+        var list = new List<BookingView>();
+
+        foreach (var b in _bookings)
         {
-            var list = new List<BookingView>();
+            _users.TryGetValue(b.UserId, out var u);
 
-            foreach (var b in _bookings)
+            // dateKey dạng yyyy-MM-dd (b.Date đã ở dạng này rồi)
+            var dateKey = b.Date;
+
+            // Tính time range: nếu có slot start/end thì dùng, nếu không thì để trống
+            string timeRange = "";
+            if (!string.IsNullOrEmpty(b.SlotStartId) && !string.IsNullOrEmpty(b.SlotEndId))
             {
-                _users.TryGetValue(b.UserId, out var u);
-
-                list.Add(new BookingView
-                {
-                    BookingId = b.BookingId,
-                    UserId = b.UserId,
-                    FullName = u?.FullName ?? "",
-                    UserType = u?.UserType ?? "",
-                    RoomId = b.RoomId,
-                    Date = b.Date,
-                    SlotStartId = b.SlotStartId,
-                    SlotEndId = b.SlotEndId,
-                    Status = b.Status,
-                    CreatedAt = b.CreatedAt,
-                    UpdatedAt = b.UpdatedAt
-                });
+                var startTime = GetSlotStartTime(dateKey, b.SlotStartId);
+                var endTime = GetSlotEndTime(dateKey, b.SlotEndId);
+                timeRange = $"{startTime:HH:mm}-{endTime:HH:mm}";
             }
 
-            // sort mới nhất lên trên cho dễ xem
-            return list
-                .OrderByDescending(v => v.CreatedAt)
-                .ToList();
+            list.Add(new BookingView
+            {
+                BookingId      = b.BookingId,
+
+                UserId         = b.UserId,
+                FullName       = u?.FullName ?? "",
+                UserType       = u?.UserType ?? "",
+                Email          = u?.Email ?? "",
+                Phone          = u?.Phone ?? "",
+
+                RoomId         = b.RoomId,
+                Date           = b.Date,
+                SlotStartId    = b.SlotStartId,
+                SlotEndId      = b.SlotEndId,
+                TimeRange      = timeRange,
+                IsRange        = b.IsRangeBooking,
+                Purpose        = b.Purpose ?? "",
+
+                Status         = b.Status,
+                CheckinDeadline= b.CheckinDeadline,
+                CheckinTime    = b.CheckinTime,
+
+                CreatedAt      = b.CreatedAt,
+                UpdatedAt      = b.UpdatedAt
+            });
         }
+
+        // sort mới nhất lên trên cho dễ xem
+        return list
+            .OrderByDescending(v => v.CreatedAt)
+            .ToList();
     }
+}
+
 
     public void HandleForceGrant(
                     string adminId,
@@ -1073,7 +1308,139 @@ class ServerState
             return true;
         }
     }
+    // Admin force GRANT RANGE từ UI Server (không đi qua TCP)
+    public bool ForceGrantRangeFromServerUi(
+        DateTime date,
+        string roomId,
+        string slotStartId,
+        string slotEndId,
+        string targetUserId,
+        TextWriter log,
+        out string error)
+    {
+        error = "";
+        var dateKey = date.ToString("yyyy-MM-dd");
 
+        lock (_lock)
+        {
+            // 0. Đảm bảo đã có state cho ngày này
+            EnsureDateInitialized(dateKey, log);
+
+            // 1. Check user
+            if (!_users.TryGetValue(targetUserId, out var targetUser) || !targetUser.IsActive)
+            {
+                error = "User không tồn tại hoặc đang bị khóa.";
+                return false;
+            }
+
+            if (!_slotsByDate.TryGetValue(dateKey, out var dict))
+            {
+                error = "Không tìm thấy dữ liệu ngày.";
+                return false;
+            }
+
+            // 2. Parse range
+            int startIdx = ParseSlotIndex(slotStartId);
+            int endIdx = ParseSlotIndex(slotEndId);
+            if (startIdx <= 0 || endIdx <= 0 || endIdx < startIdx)
+            {
+                error = "Khoảng ca không hợp lệ.";
+                return false;
+            }
+
+            // 3. Gom tất cả slot trong range + validate
+            var slots = new List<(string slotId, SlotState state)>();
+            for (int idx = startIdx; idx <= endIdx; idx++)
+            {
+                var sid = GetSlotId(idx);
+                var key = MakeKey(roomId, sid);
+
+                if (!dict.TryGetValue(key, out var slot))
+                {
+                    error = $"Không tìm thấy phòng/ca {roomId}-{sid}.";
+                    return false;
+                }
+
+                if (slot.IsEventLocked)
+                {
+                    error = $"Slot {roomId}-{sid} đang bị lock cho event.";
+                    return false;
+                }
+
+                // Không cho user giữ 2 phòng khác nhau cùng ca
+                if (HasCrossRoomConflict(targetUserId, dateKey, roomId, sid, out var conflictedRoom))
+                {
+                    error = $"User đã giữ phòng {conflictedRoom} ở cùng ca {sid}.";
+                    return false;
+                }
+
+                slots.Add((sid, slot));
+            }
+
+            // 4. Hạ booking cũ & clear queue từng slot trong range
+            foreach (var (sid, slot) in slots)
+            {
+                if (slot.CurrentHolderClientId != null)
+                {
+                    log.WriteLine($"[ADMIN FORCE_GRANT_RANGE-UI] override holder {slot.CurrentHolderClientId} on {roomId}-{sid} ({dateKey})");
+                    UpdateCurrentBookingStatus(slot, roomId, sid, "CANCELLED", log);
+                }
+
+                if (slot.WaitingQueue.Count > 0)
+                {
+                    log.WriteLine($"[ADMIN FORCE_GRANT_RANGE-UI] clear queue {roomId}-{sid}, count={slot.WaitingQueue.Count}");
+                    while (slot.WaitingQueue.Count > 0)
+                    {
+                        var (queuedClientId, queuedStream) = slot.WaitingQueue.Dequeue();
+                        // Thông báo: yêu cầu của bạn đã bị admin hủy
+                        Send(queuedStream, $"INFO|CANCELLED|{roomId}|{sid}\n");
+                    }
+                }
+
+                // reset trước khi gán booking mới
+                slot.IsBusy = false;
+                slot.CurrentHolderClientId = null;
+                slot.CurrentBookingId = null;
+            }
+
+            // 5. Tạo 1 booking RANGE mới
+            var booking = CreateBookingForGrant(
+                targetUserId,
+                roomId,
+                dateKey,
+                slotStartId,
+                slotEndId,
+                true,       // IsRangeBooking = true
+                log);
+
+            // 6. Gán booking này cho toàn bộ slot trong range
+            foreach (var (sid, slot) in slots)
+            {
+                slot.IsBusy = true;
+                slot.CurrentHolderClientId = targetUserId;
+                slot.CurrentBookingId = booking.BookingId;
+
+                log.WriteLine($"[ADMIN FORCE_GRANT_RANGE-UI_SLOT] {targetUserId} -> {roomId}-{sid} on {dateKey}");
+            }
+
+            log.WriteLine($"[ADMIN FORCE_GRANT_RANGE-UI] {targetUserId} -> {roomId}-{slotStartId}-{slotEndId} on {dateKey}");
+            return true;
+        }
+    }
+    // Admin Force RELEASE RANGE từ UI Server
+    public bool ForceReleaseRangeFromServerUi(
+        DateTime date,
+        string roomId,
+        string slotStartId,
+        string slotEndId,
+        TextWriter log,
+        out string error)
+    {
+        // Thực ra chỉ cần 1 slot bất kỳ trong range,
+        // vì CompleteAndReleaseSlot sẽ đọc booking.IsRangeBooking
+        // rồi tự giải phóng toàn bộ range.
+        return CompleteAndReleaseSlot(date, roomId, slotStartId, log, out error);
+    }
     // Admin check-in tại UI server, không đi qua TCP client
     public void AdminCheckIn(string dateKey, string roomId, string slotId, TextWriter log)
     {
@@ -1578,6 +1945,35 @@ class ServerState
             return true;
         }
     }
+
+    public List<UserInfo> GetUserViews()
+    {
+        lock (_lock)
+        {
+            return _users.Values
+                .Select(u => new UserInfo
+                {
+                    UserId = u.UserId,
+                    FullName = u.FullName,
+                    UserType = u.UserType,
+                    StudentId = u.StudentId,
+                    LecturerId = u.LecturerId,
+                    Class = u.Class,
+
+                    // Với Student: dùng Department; với Lecturer: dùng Faculty
+                    Department = u.UserType == "Student" ? u.Department : u.Faculty,
+
+                    Email = u.Email,
+                    Phone = u.Phone,
+                    IsActive = u.IsActive
+                })
+                .OrderBy(v => v.UserId)
+                .ToList();
+        }
+    }
+
+
+
     // Admin Force RELEASE từ UI Server
     public bool ForceReleaseFromServerUi(
         DateTime date,
@@ -1593,7 +1989,7 @@ class ServerState
         return CompleteAndReleaseSlot(date, roomId, slotId, log, out error);
     }
 
-        /// Tra cứu lịch 14 ca của 1 phòng trong 1 ngày
+    /// Tra cứu lịch 14 ca của 1 phòng trong 1 ngày
     public List<RoomDailySlotView> GetDailySchedule(DateTime date, string roomId, TextWriter log)
     {
         var dateKey = date.ToString("yyyy-MM-dd");
@@ -1891,6 +2287,174 @@ class ServerState
             return false;
         }
     }
+
+    /// <summary>
+    /// Kiểm tra trùng các trường unique: Email, Phone, StudentId, LecturerId.
+    /// ignoreUserId: dùng cho case Update (bỏ qua chính nó).
+    /// </summary>
+    private bool ValidateUserUniqueFields(UserInfo newUser, string? ignoreUserId, out string error)
+    {
+        error = "";
+
+        foreach (var u in _users.Values)
+        {
+            // Nếu đang update, bỏ qua chính user đó
+            if (!string.IsNullOrEmpty(ignoreUserId) &&
+                string.Equals(u.UserId, ignoreUserId, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            // Email trùng
+            if (!string.IsNullOrWhiteSpace(newUser.Email) &&
+                string.Equals(u.Email, newUser.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"Email {newUser.Email} đã được sử dụng bởi UserId {u.UserId}";
+                return false;
+            }
+
+            // SĐT trùng
+            if (!string.IsNullOrWhiteSpace(newUser.Phone) &&
+                string.Equals(u.Phone, newUser.Phone, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"Số điện thoại {newUser.Phone} đã được sử dụng bởi UserId {u.UserId}";
+                return false;
+            }
+
+            // MSSV trùng (chỉ quan tâm khi là Student)
+            if (string.Equals(newUser.UserType, "Student", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(newUser.StudentId) &&
+                string.Equals(u.StudentId, newUser.StudentId, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"MSSV {newUser.StudentId} đã được sử dụng bởi UserId {u.UserId}";
+                return false;
+            }
+
+            // Mã GV trùng (chỉ quan tâm khi là Lecturer)
+            if (string.Equals(newUser.UserType, "Lecturer", StringComparison.OrdinalIgnoreCase) &&
+                !string.IsNullOrWhiteSpace(newUser.LecturerId) &&
+                string.Equals(u.LecturerId, newUser.LecturerId, StringComparison.OrdinalIgnoreCase))
+            {
+                error = $"Mã GV {newUser.LecturerId} đã được sử dụng bởi UserId {u.UserId}";
+                return false;
+            }
+        }
+
+        return true;
+    }
+    public bool UpdateUser(UserInfo updatedUser, out string error)
+    {
+        error = "";
+
+        if (string.IsNullOrWhiteSpace(updatedUser.UserId))
+        {
+            error = "UserId is required";
+            return false;
+        }
+
+        if (!_users.TryGetValue(updatedUser.UserId, out var existing))
+        {
+            error = $"UserId {updatedUser.UserId} not found";
+            return false;
+        }
+
+        // Check trùng Email/Phone/StudentId/LecturerId nhưng bỏ qua chính nó
+        if (!ValidateUserUniqueFields(updatedUser, ignoreUserId: updatedUser.UserId, out error))
+        {
+            return false;
+        }
+
+        // Validate theo loại user
+        if (string.Equals(updatedUser.UserType, "Student", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(updatedUser.StudentId))
+            {
+                error = "StudentId (MSSV) is required for Student";
+                return false;
+            }
+
+            if (!IsValidFaculty(updatedUser.Department))
+            {
+                error = "Khoa (Department) không hợp lệ. Hãy chọn trong danh sách CNTT2, IOT2, ...";
+                return false;
+            }
+
+            updatedUser.LecturerId = "";
+            updatedUser.Faculty = "";
+        }
+        else if (string.Equals(updatedUser.UserType, "Lecturer", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(updatedUser.LecturerId))
+            {
+                error = "LecturerId (Mã GV) is required for Lecturer";
+                return false;
+            }
+
+            if (!IsValidFaculty(updatedUser.Faculty))
+            {
+                error = "Faculty không hợp lệ. Hãy chọn trong danh sách CNTT2, IOT2, ...";
+                return false;
+            }
+
+            updatedUser.StudentId = "";
+            updatedUser.Department = "";
+        }
+        else
+        {
+            updatedUser.StudentId = "";
+            updatedUser.LecturerId = "";
+            // Department/Faculty có thể để trống
+        }
+
+        // Không cho update trực tiếp PasswordHash
+        updatedUser.PasswordHash = existing.PasswordHash;
+        // updatedUser.IsActive = existing.IsActive;
+
+        _users[updatedUser.UserId] = updatedUser;
+        return true;
+    }
+    public bool SetUserActive(string userId, bool isActive, out string error)
+    {
+        error = "";
+
+        if (!_users.TryGetValue(userId, out var user))
+        {
+            error = $"UserId {userId} not found";
+            return false;
+        }
+
+        user.IsActive = isActive;
+        return true;
+    }
+    public bool DeleteUser(string userId, out string error)
+    {
+        error = "";
+
+        if (!_users.TryGetValue(userId, out var user))
+        {
+            error = $"UserId {userId} not found";
+            return false;
+        }
+
+        // OPTIONAL: chặn xoá nếu user đã có Booking
+        bool hasBooking = _bookings.Any(b => string.Equals(b.UserId, userId, StringComparison.OrdinalIgnoreCase));
+        if (hasBooking)
+        {
+            error = $"User {userId} đã có booking, không thể xoá (có thể dùng Lock/Inactive thay vì Delete).";
+            return false;
+        }
+
+        _users.Remove(userId);
+        return true;
+    }
+
+    private bool IsValidFaculty(string? faculty)
+    {
+        if (string.IsNullOrWhiteSpace(faculty)) return false;
+        return FacultySet.Contains(faculty.Trim());
+    }
+
+
 
 
 }
