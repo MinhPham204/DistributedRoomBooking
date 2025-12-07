@@ -1603,7 +1603,7 @@ public class Form1 : Form
         main.Controls.Add(filterPanel, 0, 0);
 
         // From date
-        filterPanel.Controls.Add(new Label { Text = "Từ ngày:", AutoSize = true, Margin = new Padding(5, 10, 3, 3) }    );
+        filterPanel.Controls.Add(new Label { Text = "Từ ngày:", AutoSize = true, Margin = new Padding(5, 10, 3, 3) });
         _dtBookingFrom = new DateTimePicker
         {
             Width = 95,
@@ -2064,6 +2064,9 @@ public class Form1 : Form
             CustomFormat = "yyyy-MM-dd"
         };
 
+        _dtStatsTo.Value = DateTime.Today;
+        _dtStatsFrom.Value = DateTime.Today.AddDays(-7);
+
         var btnRefreshStats = new Button
         {
             Left = 370,
@@ -2071,12 +2074,14 @@ public class Form1 : Form
             Width = 80,
             Text = "Refresh"
         };
-        // TODO: gắn event: load RoomStats & UserTypeStats
+
+        btnRefreshStats.Click += (s, e) => ReloadStatistics();
+
         pnlFilter.Controls.AddRange(new Control[]
         {
-        lblFrom, _dtStatsFrom,
-        lblTo, _dtStatsTo,
-        btnRefreshStats
+            lblFrom, _dtStatsFrom,
+            lblTo, _dtStatsTo,
+            btnRefreshStats
         });
 
         // Group: Room stats
@@ -2120,7 +2125,142 @@ public class Form1 : Form
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
         };
         grpUserType.Controls.Add(_gridUserTypeStats);
+
+        ReloadStatistics();
+
     }
+
+    // Reload lại 2 grid thống kê dựa trên khoảng ngày
+    private void ReloadStatistics()
+    {
+        if (_dtStatsFrom == null || _dtStatsTo == null)
+            return;
+
+        var from = _dtStatsFrom.Value.Date;
+        var to = _dtStatsTo.Value.Date;
+
+        // Nếu user chọn nhầm (to < from) thì đảo lại
+        if (to < from)
+        {
+            var tmp = from;
+            from = to;
+            to = tmp;
+        }
+
+        // ===== 1) THỐNG KÊ THEO PHÒNG =====
+        var roomStats = _state.GetRoomStatistics(from, to);
+
+        // Map thêm cột % NoShow
+        var roomView = roomStats.Select(r => new
+        {
+            r.RoomId,
+            r.TotalBookings,
+            r.NoShowCount,
+            r.CancelledCount,
+            // Tỉ lệ NoShow % = NoShow / Total * 100
+            NoShowPercent = r.TotalBookings > 0
+                ? Math.Round(r.NoShowCount * 100.0 / r.TotalBookings, 1)
+                : 0.0
+        }).ToList();
+
+        _gridRoomStats.AutoGenerateColumns = false;
+        _gridRoomStats.Columns.Clear();
+
+        var colRoomId = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "RoomId",
+            HeaderText = "Room",
+            Width = 80
+        };
+        var colTotal = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "TotalBookings",
+            HeaderText = "Total",
+            Width = 60
+        };
+        var colNoShow = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "NoShowCount",
+            HeaderText = "NoShow",
+            Width = 60
+        };
+        var colCancelled = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "CancelledCount",
+            HeaderText = "Cancelled",
+            Width = 60
+        };
+        var colNoShowPercent = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "NoShowPercent",
+            HeaderText = "NoShow %",
+            Width = 80,
+            DefaultCellStyle = { Format = "N1" } // 1 chữ số thập phân
+        };
+
+        _gridRoomStats.Columns.AddRange(
+            colRoomId,
+            colTotal,
+            colNoShow,
+            colCancelled,
+            colNoShowPercent
+        );
+
+        _gridRoomStats.DataSource = roomView;
+
+        // ===== 2) THỐNG KÊ THEO LOẠI USER =====
+        var userStats = _state.GetUserTypeStatistics(from, to);
+
+        var userView = userStats.Select(u => new
+        {
+            u.UserType,
+            u.TotalBookings,
+            u.NoShowCount,
+            NoShowPercent = u.TotalBookings > 0
+                ? Math.Round(u.NoShowCount * 100.0 / u.TotalBookings, 1)
+                : 0.0
+        }).ToList();
+
+        _gridUserTypeStats.AutoGenerateColumns = false;
+        _gridUserTypeStats.Columns.Clear();
+
+        var colUserType = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "UserType",
+            HeaderText = "User type",
+            Width = 100
+        };
+        var colUTTotal = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "TotalBookings",
+            HeaderText = "Total",
+            Width = 60
+        };
+        var colUTNoShow = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "NoShowCount",
+            HeaderText = "NoShow",
+            Width = 60
+        };
+        var colUTNoShowPercent = new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "NoShowPercent",
+            HeaderText = "NoShow %",
+            Width = 80,
+            DefaultCellStyle = { Format = "N1" }
+        };
+
+        _gridUserTypeStats.Columns.AddRange(
+            colUserType,
+            colUTTotal,
+            colUTNoShow,
+            colUTNoShowPercent
+        );
+
+        _gridUserTypeStats.DataSource = userView;
+    }
+
+
     private void BuildTabSettings()
     {
         // Group: Cấu hình ca học
