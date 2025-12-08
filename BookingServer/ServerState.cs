@@ -95,7 +95,8 @@ class ServerState
 
 
     private bool _useDemoNow;
-    private DateTime _demoNow;
+    private DateTime _demoLogicalStart; // thời gian demo mà bạn chọn
+    private DateTime _demoRealStart;    // thời gian hệ thống khi bắt đầu demo
 
     public DateTime Now
     {
@@ -103,18 +104,29 @@ class ServerState
         {
             lock (_lock)
             {
-                return _useDemoNow ? _demoNow : DateTime.Now;
+                if (!_useDemoNow)
+                {
+                    // Dùng thời gian hệ thống bình thường
+                    return DateTime.Now;
+                }
+
+                // Demo time: chạy theo delta của thời gian thật
+                var delta = DateTime.Now - _demoRealStart;
+                return _demoLogicalStart + delta;
             }
         }
     }
+
 
     public void SetDemoNow(DateTime demoNow, TextWriter log)
     {
         lock (_lock)
         {
-            _demoNow = demoNow;
+            _demoLogicalStart = demoNow;
+            _demoRealStart = DateTime.Now;
             _useDemoNow = true;
-            log.WriteLine($"[TIME] Switch to demo time: {_demoNow:yyyy-MM-dd HH:mm}");
+
+            log.WriteLine($"[TIME] Switch to DEMO time: {_demoLogicalStart:yyyy-MM-dd HH:mm:ss}");
         }
     }
 
@@ -123,9 +135,10 @@ class ServerState
         lock (_lock)
         {
             _useDemoNow = false;
-            log.WriteLine("[TIME] Switch back to system time");
+            log.WriteLine("[TIME] Switch back to SYSTEM time");
         }
     }
+
 
     private static readonly string[] FacultyList =
 {
@@ -378,25 +391,25 @@ class ServerState
 
         return (true, user.UserType, "");
     }
-public UserInfo? FindUserByEmail(string email)
-{
-    if (string.IsNullOrWhiteSpace(email))
-        return null;
-
-    lock (_lock)
+    public UserInfo? FindUserByEmail(string email)
     {
-        foreach (var u in _users.Values)
+        if (string.IsNullOrWhiteSpace(email))
+            return null;
+
+        lock (_lock)
         {
-            if (!string.IsNullOrEmpty(u.Email) &&
-                string.Equals(u.Email, email, StringComparison.OrdinalIgnoreCase))
+            foreach (var u in _users.Values)
             {
-                return u;
+                if (!string.IsNullOrEmpty(u.Email) &&
+                    string.Equals(u.Email, email, StringComparison.OrdinalIgnoreCase))
+                {
+                    return u;
+                }
             }
         }
-    }
 
-    return null;
-}
+        return null;
+    }
 
     public bool IsAdmin(string userId)
     {
@@ -2086,6 +2099,20 @@ public UserInfo? FindUserByEmail(string email)
             };
         }
     }
+
+    public List<BookingView> GetTodayBookingsForUser(string userId)
+    {
+        var todayKey = Now.Date.ToString("yyyy-MM-dd");
+
+        lock (_lock)
+        {
+            return GetBookingViews()
+                .Where(b => b.UserId == userId && b.Date == todayKey)
+                .OrderBy(b => b.TimeRange)
+                .ToList();
+        }
+    }
+
     public bool CheckInSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
     {
         error = "";
@@ -2828,6 +2855,80 @@ public UserInfo? FindUserByEmail(string email)
         _users[updatedUser.UserId] = updatedUser;
         return true;
     }
+
+    public bool UpdateUserContact(string userId, string? email, string? phone, out string error)
+    {
+        error = "";
+
+        lock (_lock)
+        {
+            if (!_users.TryGetValue(userId, out var user))
+            {
+                error = $"UserId {userId} not found";
+                return false;
+            }
+
+            // Tạo bản tạm để dùng lại ValidateUserUniqueFields
+            var temp = new UserInfo
+            {
+                UserId = user.UserId,
+                UserType = user.UserType,
+                FullName = user.FullName,
+                StudentId = user.StudentId,
+                Class = user.Class,
+                Department = user.Department,
+                LecturerId = user.LecturerId,
+                Faculty = user.Faculty,
+                Email = email ?? "",
+                Phone = phone ?? "",
+                PasswordHash = user.PasswordHash,
+                IsActive = user.IsActive
+            };
+
+            // Kiểm tra trùng Email / Phone / MSSV / Mã GV (ignore chính user này)
+            if (!ValidateUserUniqueFields(temp, ignoreUserId: user.UserId, out error))
+            {
+                return false;
+            }
+
+            // OK, ghi lại vào user thật
+            user.Email = temp.Email;
+            user.Phone = temp.Phone;
+
+            return true;
+        }
+    }
+    public bool ChangeUserPassword(string userId, string oldPassword, string newPassword, out string error)
+    {
+        error = "";
+
+        lock (_lock)
+        {
+            if (!_users.TryGetValue(userId, out var user))
+            {
+                error = $"UserId {userId} not found";
+                return false;
+            }
+
+            // Kiểm tra mật khẩu cũ (BCrypt)
+            if (!BCryptNet.Verify(oldPassword, user.PasswordHash))
+            {
+                error = "Mật khẩu cũ không đúng.";
+                return false;
+            }
+
+            if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < 6)
+            {
+                error = "Mật khẩu mới phải có ít nhất 6 ký tự.";
+                return false;
+            }
+
+            // Cập nhật hash mới
+            user.PasswordHash = BCryptNet.HashPassword(newPassword);
+            return true;
+        }
+    }
+
     public bool SetUserActive(string userId, bool isActive, out string error)
     {
         error = "";
@@ -2928,6 +3029,81 @@ public UserInfo? FindUserByEmail(string email)
     {
         // TODO: nếu bạn có map UserId -> clientId/NetworkStream thì lookup và Send(...)
         log.WriteLine($"[NOTIFY] {userId} <- {message}");
+    }
+    // ở cuối class ServerState
+    // public class SlotTimeConfigRow
+    // {
+    //     public string SlotId { get; set; } = "";
+    //     public string Start { get; set; } = ""; // "HH:mm"
+    //     public string End { get; set; } = "";
+    // }
+
+    public List<SlotTimeConfigRow> GetSlotTimeConfigs()
+    {
+        lock (_lock)
+        {
+            // _settings.SlotTimes đã là List<SlotTimeConfigRow> (Models)
+            return _settings.SlotTimes
+                .OrderBy(r => r.Index)
+                .ToList();
+        }
+    }
+
+    public List<(string SlotId, string Start, string End)> GetSlotConfigForClient()
+    {
+        lock (_lock)
+        {
+            var result = new List<(string SlotId, string Start, string End)>();
+
+            if (_settings.SlotTimes == null || _settings.SlotTimes.Count == 0)
+            {
+                // fallback: nếu chưa cấu hình thì tạo 1h/ca từ 07:00
+                for (int i = 1; i <= SlotCount; i++)
+                {
+                    var s = TimeSpan.FromHours(7 + (i - 1));
+                    var e = s.Add(TimeSpan.FromHours(1));
+                    result.Add(($"S{i}", s.ToString(@"hh\:mm"), e.ToString(@"hh\:mm")));
+                }
+            }
+            else
+            {
+                foreach (var row in _settings.SlotTimes.OrderBy(r => r.Index))
+                {
+                    // SlotId có thể null -> fallback "S{Index}"
+                    var slotId = string.IsNullOrWhiteSpace(row.SlotId)
+                        ? $"S{row.Index}"
+                        : row.SlotId;
+
+                    result.Add((slotId, row.Start, row.End));
+                }
+            }
+
+            return result;
+        }
+    }
+    public List<BookingView> GetUserSchedule(string userId, DateTime fromDate, DateTime toDate)
+    {
+        if (string.IsNullOrWhiteSpace(userId))
+            return new List<BookingView>();
+
+        var from = fromDate.Date;
+        var to = toDate.Date;
+
+        lock (_lock)
+        {
+            var allViews = GetBookingViews(); // đã include TimeRange chuẩn
+
+            var query = allViews
+                .Where(b =>
+                {
+                    var d = DateTime.Parse(b.Date); // b.Date = "yyyy-MM-dd"
+                    return b.UserId == userId && d >= from && d <= to;
+                })
+                .OrderBy(b => DateTime.Parse(b.Date))
+                .ThenBy(b => b.SlotStartId);
+
+            return query.ToList();
+        }
     }
 
 }

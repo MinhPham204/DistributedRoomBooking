@@ -86,9 +86,9 @@
         "EventNote": null
       },
       "A08::S13": {
-        "IsBusy": true,
-        "CurrentHolderClientId": "sv001",
-        "CurrentBookingId": "258891fc-b9ed-4587-8a49-fd18e915387d",
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
         "IsEventLocked": false,
         "EventNote": null
       },
@@ -22679,6 +22679,1086 @@
         "IsEventLocked": false,
         "EventNote": null
       }
+    },
+    "2025-12-09": {
+      "A08::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A08::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A16::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A21::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A22::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A23::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A24-A25::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A31::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A32-A33::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S1": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S2": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S3": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S4": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S5": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S6": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S7": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S8": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S9": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S10": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S11": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S12": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S13": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      },
+      "A34-A35::S14": {
+        "IsBusy": false,
+        "CurrentHolderClientId": null,
+        "CurrentBookingId": null,
+        "IsEventLocked": false,
+        "EventNote": null
+      }
     }
   },
   "Bookings": [
@@ -22693,8 +23773,8 @@
       "IsRangeBooking": false,
       "Purpose": "",
       "CreatedAt": "2025-12-05T14:05:57.3551638+07:00",
-      "UpdatedAt": "2025-12-05T14:06:00.8703012+07:00",
-      "Status": "IN_USE",
+      "UpdatedAt": "2025-12-08T01:54:16.4981664+07:00",
+      "Status": "CANCELLED",
       "CheckinTime": "2025-12-05T14:06:00.8703012+07:00",
       "CheckinDeadline": "2025-12-05T14:20:57.3551638+07:00"
     },
@@ -22764,12 +23844,12 @@
       "FullName": "Nguy\u1EC5n V\u0103n B",
       "StudentId": "n22dccn145",
       "Class": "",
-      "Department": "KT2",
+      "Department": "CNTT2",
       "LecturerId": "",
       "Faculty": "",
       "Email": "n22dccn145@student.ptithcm.edu.vn",
       "Phone": "0900000005",
-      "PasswordHash": "$2a$11$hEcb8SKKSWS9Bn0bK9Y8SO5MFZVw4skFQuhKYgck6MMY8yuIcW7o2",
+      "PasswordHash": "$2a$11$hf/4ofTV2QecBfJOAmZM8ukncdqNfPO4FUXftsdGRBtRQV25ZiUHa",
       "IsActive": true
     }
   }

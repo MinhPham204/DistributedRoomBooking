@@ -46,6 +46,8 @@ public class Form1 : Form
     // ===== Top controls (Start + Date) =====
     private Button _btnStart = null!;
     private DateTimePicker _dtDate = null!;   // ngày đang xem
+    private Label _lblNow = null!;            // label hiển thị thời gian Now
+    private WinFormsTimer _nowTimer;          // timer cập nhật Now
 
     // ===== Tab Slot detail / Check-in =====
     private GroupBox _grpCheckin = null!;
@@ -181,6 +183,19 @@ public class Form1 : Form
         // InitializeComponent();
         SetupUi();
 
+        // ===== Timer cập nhật Label Now mỗi 1 giây =====
+        _nowTimer = new WinFormsTimer();
+        _nowTimer.Interval = 1000; // 1 giây
+        _nowTimer.Tick += (s, e) =>
+        {
+            var now = _state.Now;  // dùng demo time nếu đang bật
+            if (_lblNow != null && !_lblNow.IsDisposed)
+            {
+                _lblNow.Text = $"Now: {now:yyyy-MM-dd HH:mm:ss}";
+            }
+        };
+        _nowTimer.Start();
+
         _noShowTimer = new WinFormsTimer();
         _noShowTimer.Interval = 60_000; // mỗi 60s quét NO_SHOW
         _noShowTimer.Tick += NoShowTimer_Tick;
@@ -250,6 +265,16 @@ public class Form1 : Form
         };
         _dtDate.ValueChanged += DtDate_ValueChanged;
         _panelTop.Controls.Add(_dtDate);
+
+        // ===== Label hiển thị thời gian Now =====
+        _lblNow = new Label
+        {
+            Left = 360,              // nằm cạnh DateTimePicker
+            Top = 12,
+            AutoSize = true,
+            Text = $"Now: {_state.Now:yyyy-MM-dd HH:mm:ss}"
+        };
+        _panelTop.Controls.Add(_lblNow);
 
         // ===== MAIN SPLIT: Left (slot list) / Right (tabs) =====
         _mainSplit = new SplitContainer
@@ -2884,161 +2909,125 @@ public class Form1 : Form
 
 
                         case "REQUEST":
-                            if (parts.Length != 4)
                             {
-                                await SendAsync(stream, "INFO|ERROR|Invalid REQUEST format\n");
+                                if (parts.Length != 4)
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|Invalid REQUEST format\n");
+                                    break;
+                                }
+
+                                var userIdInMsg = parts[1];
+
+                                // Cho phép đặt clientId bằng userIdInMsg nếu connection này chưa có user
+                                if (clientId == null)
+                                {
+                                    clientId = userIdInMsg;
+                                }
+                                else if (!string.Equals(clientId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                                    break;
+                                }
+
+                                _state.HandleRequest(clientId, parts[2], parts[3], stream, new UiLogger(this));
+                                RefreshSlotsSafe();
                                 break;
                             }
 
-                            if (clientId == null)
-                            {
-                                await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
-                                break;
-                            }
 
-                            if (!string.Equals(clientId, parts[1], StringComparison.OrdinalIgnoreCase))
-                            {
-                                await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                break;
-                            }
-
-                            _state.HandleRequest(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                            RefreshSlotsSafe();
-                            break;
 
                         case "RELEASE":
-                            if (parts.Length != 4)
                             {
-                                await SendAsync(stream, "INFO|ERROR|Invalid RELEASE format\n");
+                                if (parts.Length != 4)
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|Invalid RELEASE format\n");
+                                    break;
+                                }
+
+                                var userIdInMsg = parts[1];
+
+                                if (clientId == null)
+                                {
+                                    clientId = userIdInMsg;
+                                }
+                                else if (!string.Equals(clientId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                                    break;
+                                }
+
+                                _state.HandleRelease(clientId, parts[2], parts[3], stream, new UiLogger(this));
+                                RefreshSlotsSafe();
                                 break;
                             }
 
-                            if (clientId == null)
-                            {
-                                await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
-                                break;
-                            }
 
-                            if (!string.Equals(clientId, parts[1], StringComparison.OrdinalIgnoreCase))
-                            {
-                                await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                break;
-                            }
-
-                            _state.HandleRelease(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                            RefreshSlotsSafe();
-                            break;
-
-                        // case "FORCE_GRANT":
-                        //     // EXPECT: FORCE_GRANT|adminId|targetUserId|roomId|slotId
-                        //     if (parts.Length != 5)
-                        //     {
-                        //         await SendAsync(stream, "INFO|ERROR|Invalid FORCE_GRANT format\n");
-                        //         break;
-                        //     }
-
-                        //     if (clientId == null)
-                        //     {
-                        //         await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
-                        //         break;
-                        //     }
-
-                        //     var adminId = parts[1];
-                        //     var targetUserId = parts[2];
-                        //     var fgRoomId = parts[3];
-                        //     var fgSlotId = parts[4];
-
-                        //     // connection này phải đúng adminId đã login
-                        //     if (!string.Equals(clientId, adminId, StringComparison.OrdinalIgnoreCase))
-                        //     {
-                        //         await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                        //         break;
-                        //     }
-
-                        //     // check quyền admin
-                        //     if (!_state.IsAdmin(adminId))
-                        //     {
-                        //         await SendAsync(stream, "INFO|ERROR|NOT_ADMIN\n");
-                        //         break;
-                        //     }
-
-                        //     _state.HandleForceGrant(adminId, targetUserId, fgRoomId, fgSlotId, stream, new UiLogger(this));
-                        //     RefreshSlotsSafe();
-                        //     break;
                         case "REQUEST_RANGE":
                             {
-                                if (clientId == null)
-                                {
-                                    await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
-                                    break;
-                                }
                                 // REQUEST_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                                if (parts.Length >= 5 && clientId != null)
-                                {
-                                    var userIdMsg = parts[1];
-                                    var roomId = parts[2];
-                                    var slotStart = parts[3];
-                                    var slotEnd = parts[4];
-
-                                    // if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
-                                    // {
-                                    //     await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                    //     break;
-                                    // }
-                                    // đảm bảo userId trong message khớp clientId đã login
-                                    if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                        break;
-                                    }
-
-                                    _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, stream, new UiLogger(this));
-                                    RefreshSlotsSafe();
-                                }
-                                else
+                                if (parts.Length < 5)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid REQUEST_RANGE\n");
-                                }
-                                break;
-                            }
-                        case "RELEASE_RANGE":
-                            {
-                                if (clientId == null)
-                                {
-                                    await SendAsync(stream, "INFO|ERROR|NOT_AUTHENTICATED\n");
                                     break;
                                 }
 
-                                // RELEASE_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                                if (parts.Length >= 5)
+                                var userIdMsg = parts[1];
+                                var roomId = parts[2];
+                                var slotStart = parts[3];
+                                var slotEnd = parts[4];
+
+                                // Cho phép gán clientId = userIdMsg cho connection đầu tiên
+                                if (clientId == null)
                                 {
-                                    var userIdMsg = parts[1];
-                                    var roomId = parts[2];
-                                    var slotStart = parts[3];
-                                    var slotEnd = parts[4];
-
-                                    if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
-                                        break;
-                                    }
-
-                                    _state.HandleReleaseRange(
-                                        clientId,
-                                        roomId,
-                                        slotStart,
-                                        slotEnd,
-                                        stream,
-                                        new UiLogger(this));
-
-                                    RefreshSlotsSafe();
+                                    clientId = userIdMsg;
                                 }
-                                else
+                                else if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
                                 {
-                                    await SendAsync(stream, "INFO|ERROR|Invalid RELEASE_RANGE\n");
+                                    await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                                    break;
                                 }
+
+                                _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, stream, new UiLogger(this));
+                                RefreshSlotsSafe();
                                 break;
                             }
+
+                        case "RELEASE_RANGE":
+                            {
+                                // RELEASE_RANGE|UserId|RoomId|SlotStart|SlotEnd
+                                if (parts.Length < 5)
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|Invalid RELEASE_RANGE\n");
+                                    break;
+                                }
+
+                                var userIdMsg = parts[1];
+                                var roomId = parts[2];
+                                var slotStart = parts[3];
+                                var slotEnd = parts[4];
+
+                                if (clientId == null)
+                                {
+                                    clientId = userIdMsg;
+                                }
+                                else if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                                    break;
+                                }
+
+                                _state.HandleReleaseRange(
+                                    clientId,
+                                    roomId,
+                                    slotStart,
+                                    slotEnd,
+                                    stream,
+                                    new UiLogger(this));
+
+                                RefreshSlotsSafe();
+                                break;
+                            }
+
 
                         case "GET_NOW":
                             {
@@ -3050,6 +3039,155 @@ public class Form1 : Form
                         case "PING":
                             await SendAsync(stream, "PONG\n");
                             break;
+                        case "GET_HOME_DATA":
+                            {
+                                // Format client gửi: GET_HOME_DATA|<UserId>
+                                if (parts.Length < 2)
+                                {
+                                    await SendAsync(stream, "ERR|MissingUserId\n");
+                                    break;
+                                }
+
+                                var userId = parts[1];
+
+                                // ✅ Gọi qua _state
+                                var bookingsToday = _state.GetTodayBookingsForUser(userId);
+
+                                // ✅ Dùng SendAsync của Form1
+                                await SendAsync(stream, "HOME_DATA_BEGIN\n");
+
+                                // Mỗi booking -> 1 dòng SCHEDULE
+                                foreach (var b in bookingsToday)
+                                {
+                                    // Col1: TimeRange
+                                    // Col2: RoomId
+                                    // Col3: Môn/Mục đích
+                                    // Col4: GV / Owner
+                                    // Col5: Status
+                                    // Col6: Extra (để trống tạm)
+
+                                    var subjectOrPurpose = string.IsNullOrWhiteSpace(b.Purpose)
+                                        ? "(No purpose)"
+                                        : b.Purpose;
+
+                                    var teacherOrOwner = string.IsNullOrWhiteSpace(b.FullName)
+                                        ? b.UserId
+                                        : b.FullName;
+
+                                    var lineSchedule =
+                                        $"SCHEDULE|{b.TimeRange}|{b.RoomId}|{subjectOrPurpose}|{teacherOrOwner}|{b.Status}|";
+
+                                    await SendAsync(stream, lineSchedule + "\n");
+                                }
+
+                                // Thông báo demo từ booking hôm nay (tạm thời)
+                                foreach (var b in bookingsToday.Take(3))
+                                {
+                                    // ⚠️ Đừng dùng lại tên biến msg để khỏi trùng với msg ở ngoài
+                                    var noti =
+                                        $"NOTI|Booking {b.RoomId} {b.TimeRange} ngày {b.Date:dd/MM/yyyy} - trạng thái: {b.Status}";
+                                    await SendAsync(stream, noti + "\n");
+                                }
+
+                                await SendAsync(stream, "HOME_DATA_END\n");
+                                break;
+                            }
+
+                        case "GET_SLOT_CONFIG":
+                            {
+                                // Không cần auth cho lệnh này
+                                var rows = _state.GetSlotTimeConfigs();
+
+                                foreach (var r in rows)
+                                {
+                                    // SLOT|S1|07:00|08:00
+                                    await SendAsync(stream, $"SLOT|{r.SlotId}|{r.Start}|{r.End}\n");
+                                }
+
+                                await SendAsync(stream, "END_SLOT_CONFIG\n");
+                                break;
+                            }
+
+                        case "GET_MY_SCHEDULE":
+                            {
+                                // parts: [0] = GET_MY_SCHEDULE, [1] = userId, [2] = fromDate, [3] = toDate
+                                if (parts.Length < 4)
+                                {
+                                    await SendAsync(stream, "ERROR|INVALID_ARGS\n");
+                                    break;
+                                }
+
+                                var userId = parts[1];
+                                if (!DateTime.TryParse(parts[2], out var fromDate))
+                                    fromDate = DateTime.Today;
+                                if (!DateTime.TryParse(parts[3], out var toDate))
+                                    toDate = fromDate;
+
+                                var list = _state.GetUserSchedule(userId, fromDate, toDate);
+
+                                var sb = new StringBuilder();
+                                sb.AppendLine("MY_SCHEDULE_BEGIN");
+                                foreach (var b in list)
+                                {
+                                    // ITEM|Date|RoomId|SlotStartId|SlotEndId|TimeRange|Status|Purpose
+                                    sb.AppendLine(
+                                        $"ITEM|{b.Date}|{b.RoomId}|{b.SlotStartId}|{b.SlotEndId}|{b.TimeRange}|{b.Status}|{b.Purpose}");
+                                }
+                                sb.AppendLine("MY_SCHEDULE_END");
+
+                                await SendAsync(stream, sb.ToString());
+                                break;
+                            }
+
+                        case "UPDATE_CONTACT":
+                            {
+                                // UPDATE_CONTACT|UserId|Email|Phone
+                                if (parts.Length < 4)
+                                {
+                                    await SendAsync(stream, "ERR|Invalid UPDATE_CONTACT format\n");
+                                    break;
+                                }
+
+                                var userId = parts[1];
+                                var email = parts[2];
+                                var phone = parts[3];
+
+                                if (_state.UpdateUserContact(userId, email, phone, out var error))
+                                {
+                                    await SendAsync(stream, "OK\n");
+                                }
+                                else
+                                {
+                                    await SendAsync(stream, "ERR|" + error + "\n");
+                                }
+
+                                break;
+                            }
+                        case "CHANGE_PASSWORD":
+                            {
+                                // CHANGE_PASSWORD|UserId|OldPwd|NewPwd
+                                if (parts.Length < 4)
+                                {
+                                    await SendAsync(stream, "ERR|Invalid CHANGE_PASSWORD format\n");
+                                    break;
+                                }
+
+                                var userId = parts[1];
+                                var oldPwd = parts[2];
+                                var newPwd = parts[3];
+
+                                if (_state.ChangeUserPassword(userId, oldPwd, newPwd, out var error))
+                                {
+                                    await SendAsync(stream, "OK\n");
+                                }
+                                else
+                                {
+                                    await SendAsync(stream, "ERR|" + error + "\n");
+                                }
+
+                                break;
+                            }
+
 
                         default:
                             await SendAsync(stream, "INFO|ERROR|Unknown command\n");

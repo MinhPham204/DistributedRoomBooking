@@ -386,7 +386,7 @@ namespace BookingClient
                             SaveRememberedLogin(info.UserId);
 
                             // Mở Main Client Form
-                            var mainForm = new MainClientForm(info, _detectedServerIp);
+                            var mainForm = new MainClientForm(info, _detectedServerIp, this);
                             mainForm.Show();
                             this.Hide();
                         }
