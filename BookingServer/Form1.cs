@@ -2930,7 +2930,7 @@ public class Form1 : Form
                                 }
 
                                 _state.HandleRequest(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                                RefreshSlotsSafe();
+                                // RefreshSlotsSafe();
                                 break;
                             }
 
@@ -2957,7 +2957,7 @@ public class Form1 : Form
                                 }
 
                                 _state.HandleRelease(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                                RefreshSlotsSafe();
+                                // RefreshSlotsSafe();
                                 break;
                             }
 
@@ -2988,7 +2988,7 @@ public class Form1 : Form
                                 }
 
                                 _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, stream, new UiLogger(this));
-                                RefreshSlotsSafe();
+                                // RefreshSlotsSafe();
                                 break;
                             }
 
@@ -3024,7 +3024,7 @@ public class Form1 : Form
                                     stream,
                                     new UiLogger(this));
 
-                                RefreshSlotsSafe();
+                                // RefreshSlotsSafe();
                                 break;
                             }
 
@@ -3187,6 +3187,20 @@ public class Form1 : Form
 
                                 break;
                             }
+                        case "GET_ROOMS":
+                            {
+                                // Lấy tất cả phòng thật từ ServerState
+                                var rooms = _state.RoomsInfo.Values;
+
+                                // Serialize JSON để client đọc được đầy đủ thông tin
+                                var json = System.Text.Json.JsonSerializer.Serialize(rooms);
+
+                                await SendAsync(stream, "ROOMS_BEGIN\n");
+                                await SendAsync(stream, json + "\n");
+                                await SendAsync(stream, "ROOMS_END\n");
+
+                                break;
+                            }
 
 
                         default:
@@ -3205,7 +3219,7 @@ public class Form1 : Form
                 if (clientId != null)
                 {
                     _state.HandleDisconnect(clientId, new UiLogger(this));
-                    RefreshSlotsSafe();
+                    // RefreshSlotsSafe();
                 }
             }
         }

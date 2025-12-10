@@ -17,7 +17,19 @@ namespace BookingClient
     {
         private readonly LoginForm _loginForm;
         private bool _isLoggingOut = false;
-
+        private bool _isReadingRooms = false;
+        private string _pendingRoomsJson = "";
+        private bool _isReadingHome = false;
+        private List<string> _homeScheduleLines = new List<string>();
+        private List<string> _homeNotificationLines = new List<string>();
+        private bool _isReadingSlotConfig = false;
+        private List<(string slotId, string start, string end)> _slotConfigTemp =
+            new List<(string, string, string)>();
+        //TCP Conection
+        private TcpClient _tcp;
+        private NetworkStream _stream;
+        private StreamWriter _writer;
+        private StreamReader _reader;
 
         // Header
         private Panel _panelHeader = null!;
@@ -64,6 +76,7 @@ namespace BookingClient
         private CheckBox _chkNeedPC = null!;
         private CheckBox _chkNeedAC = null!;
         private ComboBox _cbBuilding = null!;
+        private CheckBox _chkNeedMic = null!;
         private Button _btnSearchRooms = null!;
         private DataGridView _gridRooms = null!;
 
@@ -144,6 +157,18 @@ namespace BookingClient
             public bool HasMic { get; set; }
             public string Status { get; set; } = "FREE";
         }
+        public class RoomInfo
+        {
+            public string RoomId { get; set; }
+            public string Building { get; set; }
+            public int Capacity { get; set; }
+            public bool HasProjector { get; set; }
+            public bool HasPC { get; set; }
+            public bool HasAirConditioner { get; set; }
+            public bool HasMic { get; set; }
+            public string Status { get; set; }
+        }
+
         private readonly List<RoomSearchRow> _allRoomsForSearch = new();
 
         private readonly Dictionary<string, string> _slotTimeLookup = new();
@@ -162,10 +187,38 @@ namespace BookingClient
             SetupUi();
             this.FormClosing += MainClientForm_FormClosing;
 
+            // ⭐ MỞ KẾT NỐI TCP CHÍNH THỨC
             this.Shown += async (s, e) =>
-    {
-        await HeaderCheckConnectAsync();
-    };
+            {
+                try
+                {
+                    _tcp = new TcpClient();
+                    await _tcp.ConnectAsync(_serverIp, 5000);
+                    _stream = _tcp.GetStream();
+                    _writer = new StreamWriter(_stream, Encoding.UTF8) { AutoFlush = true };
+                    _reader = new StreamReader(_stream, Encoding.UTF8);
+
+                    AppendClientLog("[INFO] Connected persistent TCP to server.");
+                }
+                catch (Exception ex)
+                {
+                    AppendClientLog("[ERROR] Cannot connect TCP: " + ex.Message);
+                    MessageBox.Show("Không thể kết nối server.\n" + ex.Message);
+                    return;
+                }
+
+                StartBackgroundListen();
+
+                // ⭐ SAU KHI CÓ TCP → GỌI CHECK CONNECT
+                await HeaderCheckConnectAsync();
+
+                // ⭐ LÚC NÀY GỌI LOAD DATA ĐÃ AN TOÀN
+                await InitHeaderTimeAsync();
+                await LoadSlotConfigFromServerAsync();
+                await LoadHomeFromServerAsync();
+                await ReloadScheduleFromServerAsync();
+                await LoadRoomsFromServerAsync();
+            };
         }
 
         private void InitializeComponent()
@@ -370,18 +423,10 @@ namespace BookingClient
             };
             _timerClock.Start();
             // Timer định kỳ đồng bộ lại giờ với server
-            _timerTimeSync = new WinFormsTimer { Interval = 1000 }; // 3 giây 1 lần, bạn muốn 1000ms cũng được
+            _timerTimeSync = new WinFormsTimer { Interval = 3000 };
             _timerTimeSync.Tick += async (s, e) =>
             {
-                var serverNow = await GetServerNowAsync();
-                if (serverNow.HasValue)
-                {
-                    // Cập nhật lại offset
-                    _serverTimeOffset = serverNow.Value - DateTime.Now;
-
-                    // Cập nhật lại label "Hôm nay: ..."
-                    UpdateTodayLabel(serverNow.Value);
-                }
+                await RequestServerNowAsync();
             };
             _timerTimeSync.Start();
             // ====== SUB HEADER: cấu hình ca ======
@@ -434,15 +479,16 @@ namespace BookingClient
                 _tabHome, _tabBooking, _tabSchedule, _tabNotifications, _tabAccount
             });
 
-            BuildHomeTabUi();
-            this.Shown += async (s, e) =>
-            {
-                await InitHeaderTimeAsync();   // anh đã có cho header
-                await LoadSlotConfigFromServerAsync(); // NEW: load giờ ca từ server
-                await LoadHomeFromServerAsync(); // load dữ liệu thật cho Trang chủ
-                await ReloadScheduleFromServerAsync();   // phần lịch sẽ thêm ở dưới
+            // this.Shown += async (s, e) =>
+            // {
+            //     await InitHeaderTimeAsync();   // anh đã có cho header
+            //     await LoadSlotConfigFromServerAsync(); // NEW: load giờ ca từ server
+            //     await LoadHomeFromServerAsync(); // load dữ liệu thật cho Trang chủ
+            //     await ReloadScheduleFromServerAsync();   // phần lịch sẽ thêm ở dưới
+            //     await LoadRoomsFromServerAsync();
 
-            };
+            // };
+            BuildHomeTabUi();
             BuildBookingTabUi();
             BuildScheduleTabUi();
             BuildNotificationsTabUi();
@@ -454,33 +500,23 @@ namespace BookingClient
         {
             try
             {
-                using (var tcp = new TcpClient())
+                if (_writer == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    {
-                        var data = Encoding.UTF8.GetBytes("PING\n");
-                        await stream.WriteAsync(data, 0, data.Length);
-
-                        var buffer = new byte[256];
-                        int read = await stream.ReadAsync(buffer, 0, buffer.Length);
-                        var resp = Encoding.UTF8.GetString(buffer, 0, read).Trim();
-
-                        if (resp == "PONG")
-                        {
-                            _pnlHeaderConnectDot.BackColor = Color.LimeGreen;
-                            _lblHeaderConnectText.Text = "OK";
-                            _lblHeaderConnectText.ForeColor = Color.Green;
-                            return true;
-                        }
-                    }
+                    _pnlHeaderConnectDot.BackColor = Color.Red;
+                    _lblHeaderConnectText.Text = "Lost";
+                    _lblHeaderConnectText.ForeColor = Color.Red;
+                    return false;
                 }
 
-                // Nếu không return ở trên => coi là lỗi
-                _pnlHeaderConnectDot.BackColor = Color.Red;
-                _lblHeaderConnectText.Text = "Lost";
-                _lblHeaderConnectText.ForeColor = Color.Red;
-                return false;
+                // ⭐ Chỉ gửi PING — không đọc phản hồi
+                await _writer.WriteLineAsync("PING");
+
+                // ⭐ Tạm thời đánh dấu "Checking..."
+                _pnlHeaderConnectDot.BackColor = Color.Gold;
+                _lblHeaderConnectText.Text = "Checking...";
+                _lblHeaderConnectText.ForeColor = Color.DarkGoldenrod;
+
+                return true; // tạm coi gửi PING thành công
             }
             catch
             {
@@ -491,40 +527,45 @@ namespace BookingClient
             }
         }
 
-        private async Task<DateTime?> GetServerNowAsync()
+
+
+        private async Task<bool> RequestServerNowAsync()
         {
             try
             {
-                using (var tcp = new TcpClient())
-                {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    {
-                        var data = Encoding.UTF8.GetBytes("GET_NOW\n");
-                        await stream.WriteAsync(data, 0, data.Length);
+                if (_writer == null)
+                    return false;
 
-                        var buffer = new byte[256];
-                        int read = await stream.ReadAsync(buffer, 0, buffer.Length);
-                        if (read <= 0) return null;
-
-                        var resp = Encoding.UTF8.GetString(buffer, 0, read).Trim();
-                        // Expect: NOW|yyyy-MM-dd HH:mm:ss
-                        if (!resp.StartsWith("NOW|"))
-                            return null;
-
-                        var payload = resp.Substring(4);
-                        if (DateTime.TryParse(payload, out var serverNow))
-                            return serverNow;
-
-                        return null;
-                    }
-                }
+                await _writer.WriteLineAsync("GET_NOW");
+                return true;
             }
             catch
             {
-                return null;
+                return false;
             }
         }
+
+        private void StartBackgroundListen()
+        {
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        string? line = await _reader.ReadLineAsync();
+                        if (line == null) break;
+
+                        Invoke(new Action(() => HandleServerMessage(line)));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    AppendClientLog("[ERROR] BackgroundListen: " + ex.Message);
+                }
+            });
+        }
+
         private string GetVietnameseWeekday(DayOfWeek dow)
         {
             switch (dow)
@@ -547,18 +588,11 @@ namespace BookingClient
         }
         private async Task InitHeaderTimeAsync()
         {
-            var serverNow = await GetServerNowAsync();
-            if (serverNow.HasValue)
-            {
-                _serverTimeOffset = serverNow.Value - DateTime.Now;
-                UpdateTodayLabel(serverNow.Value);
-            }
-            else
-            {
-                // fallback: dùng giờ máy nếu không gọi được server
-                _serverTimeOffset = TimeSpan.Zero;
-                UpdateTodayLabel(DateTime.Now);
-            }
+            // yêu cầu server gửi NOW
+            await RequestServerNowAsync();
+
+            // tạm dùng giờ máy, lát nữa khi server gửi NOW thì offset sẽ cập nhật lại
+            UpdateTodayLabel(DateTime.Now);
         }
 
         // ================== 2.3. TAB TRANG CHỦ ==================
@@ -707,92 +741,16 @@ namespace BookingClient
 
         private async Task LoadHomeFromServerAsync()
         {
-            _gridTodaySchedule.Rows.Clear();
-            _lstLatestNotifications.Items.Clear();
-
-            try
+            if (_writer == null)
             {
-                using (var tcp = new TcpClient())
-                {
-                    // Dùng đúng cổng TCP server (5000)
-                    await tcp.ConnectAsync(_serverIp, 5000);
-
-                    using (var stream = tcp.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        // Gửi lệnh
-                        var cmd = $"GET_HOME_DATA|{_currentUser.UserId}\n";
-                        var data = Encoding.UTF8.GetBytes(cmd);
-                        await stream.WriteAsync(data, 0, data.Length);
-
-                        // Đọc từng dòng đến HOME_DATA_END
-                        bool started = false;
-
-                        while (true)
-                        {
-                            var line = await reader.ReadLineAsync();
-                            if (line == null) break;
-
-                            if (line == "HOME_DATA_BEGIN")
-                            {
-                                started = true;
-                                continue;
-                            }
-
-                            if (line == "HOME_DATA_END")
-                                break;
-
-                            if (!started)
-                                continue;
-
-                            // Xử lý dòng
-                            if (line.StartsWith("SCHEDULE|"))
-                            {
-                                var parts = line.Split('|');
-                                // [0]=SCHEDULE
-                                // [1]=TimeRange
-                                // [2]=RoomId
-                                // [3]=Subject/Purpose
-                                // [4]=Teacher/Owner
-                                // [5]=Status
-                                // [6]=Extra
-                                if (parts.Length >= 6)
-                                {
-                                    var timeRange = parts[1];
-                                    var roomId = parts[2];
-                                    var subject = parts[3];
-                                    var teacher = parts[4];
-                                    var status = parts[5];
-                                    var extra = parts.Length > 6 ? parts[6] : "";
-
-                                    // Map vào cột grid hiện tại của anh
-                                    // Ví dụ: Giờ, Phòng, Môn, Trạng thái, Ghi chú
-                                    _gridTodaySchedule.Rows.Add(
-                                        timeRange,
-                                        roomId,
-                                        subject,
-                                        teacher,
-                                        status,
-                                        extra
-                                    );
-                                }
-                            }
-                            else if (line.StartsWith("NOTI|"))
-                            {
-                                var msg = line.Substring("NOTI|".Length);
-                                _lstLatestNotifications.Items.Add(msg);
-                            }
-                        }
-                    }
-                }
+                MessageBox.Show("TCP chưa sẵn sàng.");
+                return;
             }
-            catch (Exception ex)
-            {
-                // Nếu lỗi server / mạng, fallback sang demo để UI vẫn có cái cho user xem
-                _lstLatestNotifications.Items.Add("Không lấy được dữ liệu Trang chủ từ server: " + ex.Message);
-                LoadHomeDemoData();
-            }
+
+            await _writer.WriteLineAsync($"GET_HOME_DATA|{_currentUser.UserId}");
+            // Không đọc gì ở đây — server sẽ push vào HandleServerMessage()
         }
+
 
 
         // ================== 2.4. TAB ĐẶT PHÒNG ==================
@@ -917,6 +875,16 @@ namespace BookingClient
             };
             grpSearch.Controls.Add(_chkNeedAC);
 
+            _chkNeedMic = new CheckBox
+            {
+                Left = 440 + 120,
+                Top = 58,
+                Width = 100,
+                Text = "Mic"
+            };
+            grpSearch.Controls.Add(_chkNeedMic);
+
+
             // Building
             var lblBuilding = new Label
             {
@@ -946,9 +914,10 @@ namespace BookingClient
                 Height = 40
             };
             grpSearch.Controls.Add(_btnSearchRooms);
-            _btnSearchRooms.Click += (s, e) =>
+            _btnSearchRooms.Click += async (s, e) =>
             {
-                SearchRoomsDemo();   // tạm filter local, sau này đổi sang gọi server
+                await LoadRoomsFromServerAsync();
+                ApplyRoomFilter();
             };
 
             // ===== Grid kết quả phòng =====
@@ -1205,6 +1174,69 @@ namespace BookingClient
             // Khởi tạo dữ liệu cho các combobox, building, room...
             InitBookingTabData();
         }
+
+        private void ApplyRoomFilter()
+        {
+            var filtered = new List<RoomSearchRow>();
+
+            foreach (var r in _allRoomsForSearch)
+            {
+                if (_chkNeedProjector.Checked && !r.HasProjector) continue;
+                if (_chkNeedPC.Checked && !r.HasPC) continue;
+                if (_chkNeedAC.Checked && !r.HasAC) continue;
+                if (_chkNeedMic.Checked && !r.HasMic) continue;
+
+                if (_numMinCapacity.Value > 0 && r.Capacity < (int)_numMinCapacity.Value)
+                    continue;
+
+                if (_cbBuilding.SelectedIndex > 0 &&
+                    r.Building != _cbBuilding.SelectedItem.ToString())
+                    continue;
+
+                filtered.Add(r);
+            }
+
+            _gridRooms.DataSource = null;
+            _gridRooms.DataSource = filtered;
+        }
+
+        private async Task LoadRoomsFromServerAsync()
+        {
+            if (_writer == null)
+            {
+                MessageBox.Show("Không thể load phòng: TCP chưa sẵn sàng.");
+                return;
+            }
+
+            await _writer.WriteLineAsync("GET_ROOMS");
+            // KHÔNG đọc stream tại đây – kết quả sẽ đi vào HandleServerMessage()
+        }
+
+        private void UpdateRoomsGridOnUi(List<RoomInfo>? rooms)
+        {
+            if (rooms == null) return;
+
+            _allRoomsForSearch.Clear();
+
+            foreach (var r in rooms)
+            {
+                _allRoomsForSearch.Add(new RoomSearchRow
+                {
+                    RoomId = r.RoomId,
+                    Building = r.Building,
+                    Capacity = r.Capacity,
+                    HasProjector = r.HasProjector,
+                    HasPC = r.HasPC,
+                    HasAC = r.HasAirConditioner,
+                    HasMic = r.HasMic,
+                    Status = r.Status
+                });
+            }
+
+            _gridRooms.DataSource = null;
+            _gridRooms.DataSource = _allRoomsForSearch;
+        }
+
         private void InitBookingTabData()
         {
             // Slot combobox: S1..S14
@@ -1679,80 +1711,76 @@ namespace BookingClient
 
             try
             {
-                using (var tcp = new TcpClient())
+                // Không dùng TcpClient mới trong Mode A
+                if (_writer == null || _reader == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        var userId = _currentUser?.UserId ?? "";
-                        if (string.IsNullOrWhiteSpace(userId))
-                            return result;
-
-                        // Gửi lệnh: GET_MY_SCHEDULE|UserId|FromDate|ToDate
-                        var cmd = $"GET_MY_SCHEDULE|{userId}|{fromDate:yyyy-MM-dd}|{toDate:yyyy-MM-dd}";
-                        await writer.WriteLineAsync(cmd);
-
-                        bool started = false;
-                        string? line;
-                        while ((line = await reader.ReadLineAsync()) != null)
-                        {
-                            line = line.Trim();
-                            if (line.Length == 0) continue;
-
-                            if (line == "MY_SCHEDULE_BEGIN")
-                            {
-                                started = true;
-                                continue;
-                            }
-                            if (line == "MY_SCHEDULE_END")
-                                break;
-
-                            if (!started) continue;
-                            if (!line.StartsWith("ITEM|")) continue;
-
-                            var parts = line.Split('|');
-                            if (parts.Length < 8) continue;
-
-                            var dateStr = parts[1];
-                            var roomId = parts[2];
-                            var slotStartId = parts[3]; // ví dụ S3
-                            var slotEndId = parts[4];
-                            var timeRange = parts[5];
-                            var status = parts[6];
-                            var purpose = parts[7];
-
-                            if (!DateTime.TryParse(dateStr, out var date))
-                                continue;
-
-                            var slotIndex = ParseSlotIndexSafe(slotStartId); // bạn đã có hàm này
-                            if (slotIndex <= 0) continue;
-
-                            result.Add(new MyScheduleItem
-                            {
-                                Date = date.Date,
-                                Slot = slotIndex,
-                                TimeRange = timeRange,
-                                RoomId = roomId,
-                                Subject = purpose,
-                                Status = status,
-                                Note = "" // nếu muốn có ghi chú riêng thì thêm field nữa trong protocol
-                            });
-                        }
-                    }
+                    AppendClientLog("[ERROR] TCP chưa sẵn sàng để load schedule.");
+                    return result;
                 }
 
-                AppendClientLog("[INFO] Loaded my schedule from server.");
+                var userId = _currentUser?.UserId ?? "";
+                if (string.IsNullOrWhiteSpace(userId))
+                    return result;
+
+                // ⭐ GỬI LỆNH QUA TCP ĐÃ MỞ
+                await _writer.WriteLineAsync(
+                    $"GET_MY_SCHEDULE|{userId}|{fromDate:yyyy-MM-dd}|{toDate:yyyy-MM-dd}");
+
+                bool started = false;
+                string? line;
+
+                // ⭐ ĐỌC DỮ LIỆU SERVER TRẢ VỀ
+                while ((line = await _reader.ReadLineAsync()) != null)
+                {
+                    line = line.Trim();
+                    if (line.Length == 0) continue;
+
+                    if (line == "MY_SCHEDULE_BEGIN")
+                    {
+                        started = true;
+                        continue;
+                    }
+
+                    if (line == "MY_SCHEDULE_END")
+                        break;
+
+                    if (!started || !line.StartsWith("ITEM|"))
+                        continue;
+
+                    // ITEM|Date|RoomId|SlotStart|SlotEnd|TimeRange|Status|Purpose
+                    var p = line.Split('|');
+                    if (p.Length < 8) continue;
+
+                    // Parse
+                    if (!DateTime.TryParse(p[1], out var date))
+                        continue;
+
+                    int slotIndex = ParseSlotIndexSafe(p[3]); // SlotStartId
+                    if (slotIndex <= 0) continue;
+
+                    result.Add(new MyScheduleItem
+                    {
+                        Date = date.Date,
+                        Slot = slotIndex,
+                        RoomId = p[2],
+                        TimeRange = p[5],
+                        Status = p[6],
+                        Subject = p[7],
+                        Note = ""
+                    });
+                }
+
+                AppendClientLog("[INFO] Loaded schedule from server.");
             }
             catch (Exception ex)
             {
                 AppendClientLog("[ERROR] LoadMyScheduleFromServerAsync: " + ex.Message);
-                // để result rỗng, sẽ fallback sang demo
+                // fallback: trả list rỗng
             }
 
             return result;
         }
+
 
         // Đổ dữ liệu cho Day View
         private void FillDayView(DateTime selectedDate, List<MyScheduleItem> weekItems)
@@ -2255,132 +2283,133 @@ namespace BookingClient
 
             if (string.IsNullOrWhiteSpace(email) && string.IsNullOrWhiteSpace(phone))
             {
-                MessageBox.Show("Email hoặc Phone phải có ít nhất một giá trị.", "Account",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    "Email hoặc Phone phải có ít nhất một giá trị.",
+                    "Account",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
                 return;
             }
 
             try
             {
-                using (var tcp = new TcpClient())
+                if (_writer == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        var cmd = $"UPDATE_CONTACT|{_currentUser.UserId}|{email}|{phone}\n";
-                        var data = Encoding.UTF8.GetBytes(cmd);
-                        await stream.WriteAsync(data, 0, data.Length);
-
-                        var resp = await reader.ReadLineAsync();
-                        if (resp == null)
-                        {
-                            MessageBox.Show("Không nhận được phản hồi từ server.", "Account",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        if (resp.StartsWith("OK"))
-                        {
-                            // Cập nhật local
-                            _currentUser.Email = email;
-                            _currentUser.Phone = phone;
-                            RefreshHeaderSubInfo();
-
-                            MessageBox.Show("Cập nhật thông tin liên hệ thành công.", "Account",
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        }
-                        else if (resp.StartsWith("ERR|"))
-                        {
-                            var msg = resp.Substring("ERR|".Length);
-                            MessageBox.Show(msg, "Account",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        }
-                        else
-                        {
-                            MessageBox.Show("Phản hồi không hợp lệ từ server: " + resp, "Account",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        }
-                    }
+                    MessageBox.Show("TCP chưa sẵn sàng.", "Account",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
+
+                // ⭐ Gửi lên server — KHÔNG chờ phản hồi!
+                string cmd = $"UPDATE_CONTACT|{_currentUser.UserId}|{email}|{phone}";
+                await _writer.WriteLineAsync(cmd);
+
+                // ❌ KHÔNG được MessageBox "Đang gửi..." 
+                // Vì phản hồi có thể đến ngay lập tức và chặn UI khiến lỗi race condition.
             }
             catch (Exception ex)
             {
-                MessageBox.Show("Lỗi khi cập nhật thông tin liên hệ:\n" + ex.Message,
+                MessageBox.Show("Lỗi khi cập nhật:\n" + ex.Message,
                     "Account", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
         private async Task ChangePasswordAsync()
         {
-            var oldPwd = _txtOldPassword.Text;
-            var newPwd = _txtNewPassword.Text;
-            var confirm = _txtConfirmPassword.Text;
+            var oldPwd = _txtOldPassword.Text.Trim();
+            var newPwd = _txtNewPassword.Text.Trim();
+            var confirm = _txtConfirmPassword.Text.Trim();
 
+            // ==== Validate trước ====
             if (string.IsNullOrWhiteSpace(oldPwd) ||
                 string.IsNullOrWhiteSpace(newPwd) ||
                 string.IsNullOrWhiteSpace(confirm))
             {
-                MessageBox.Show("Vui lòng nhập đủ mật khẩu cũ, mật khẩu mới và xác nhận.", "Đổi mật khẩu",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    "Vui lòng nhập đủ mật khẩu cũ, mật khẩu mới và xác nhận.",
+                    "Đổi mật khẩu",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
                 return;
             }
 
             if (newPwd != confirm)
             {
-                MessageBox.Show("Mật khẩu mới và xác nhận không khớp.", "Đổi mật khẩu",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    "Mật khẩu mới và xác nhận không khớp.",
+                    "Đổi mật khẩu",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
                 return;
             }
 
             if (newPwd.Length < 6)
             {
-                MessageBox.Show("Mật khẩu mới phải có ít nhất 6 ký tự.", "Đổi mật khẩu",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(
+                    "Mật khẩu mới phải có ít nhất 6 ký tự.",
+                    "Đổi mật khẩu",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning
+                );
                 return;
             }
 
             try
             {
-                using (var tcp = new TcpClient())
+                // ⭐ KHÔNG mở TCP mới — dùng persistent TCP
+                if (_writer == null || _reader == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        var cmd = $"CHANGE_PASSWORD|{_currentUser.UserId}|{oldPwd}|{newPwd}\n";
-                        var data = Encoding.UTF8.GetBytes(cmd);
-                        await stream.WriteAsync(data, 0, data.Length);
-
-                        var resp = await reader.ReadLineAsync();
-                        if (resp == null)
-                        {
-                            MessageBox.Show("Không nhận được phản hồi từ server.", "Đổi mật khẩu",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        if (resp.StartsWith("OK"))
-                        {
-                            MessageBox.Show("Đổi mật khẩu thành công.", "Đổi mật khẩu",
-                                MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                            _txtOldPassword.Text = "";
-                            _txtNewPassword.Text = "";
-                            _txtConfirmPassword.Text = "";
-                        }
-                        else if (resp.StartsWith("ERR|"))
-                        {
-                            var msg = resp.Substring("ERR|".Length);
-                            MessageBox.Show(msg, "Đổi mật khẩu",
-                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                        }
-                        else
-                        {
-                            MessageBox.Show("Phản hồi không hợp lệ từ server: " + resp, "Đổi mật khẩu",
-                                MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        }
-                    }
+                    MessageBox.Show("Chưa sẵn sàng kết nối server.", "Đổi mật khẩu",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
+
+                // ⭐ Gửi lệnh
+                string cmd = $"CHANGE_PASSWORD|{_currentUser.UserId}|{oldPwd}|{newPwd}";
+                await _writer.WriteLineAsync(cmd);
+
+                // ⭐ Đọc trả lời
+                string? resp = await _reader.ReadLineAsync();
+                if (resp == null)
+                {
+                    MessageBox.Show("Không nhận được phản hồi từ server.", "Đổi mật khẩu",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                if (resp == "OK")
+                {
+                    MessageBox.Show(
+                        "Đổi mật khẩu thành công.",
+                        "Đổi mật khẩu",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+
+                    // Clear UI fields
+                    _txtOldPassword.Text = "";
+                    _txtNewPassword.Text = "";
+                    _txtConfirmPassword.Text = "";
+                    return;
+                }
+
+                if (resp.StartsWith("ERR|"))
+                {
+                    MessageBox.Show(resp.Substring(4), "Đổi mật khẩu",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // ❌ Bắt trường hợp server trả về không đúng format
+                MessageBox.Show(
+                    "Phản hồi không hợp lệ từ server: " + resp,
+                    "Đổi mật khẩu",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error
+                );
             }
             catch (Exception ex)
             {
@@ -2388,6 +2417,7 @@ namespace BookingClient
                     "Đổi mật khẩu", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
+
 
         private void SearchRoomsDemo()
         {
@@ -2480,79 +2510,79 @@ namespace BookingClient
             if (_txtClientLog == null) return;
             _txtClientLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
         }
+
+        private void ApplySlotConfig()
+        {
+            // Clear lookup
+            _slotTimeLookup.Clear();
+
+            var listForHeader = new List<(int index, string id, string start, string end)>();
+
+            foreach (var item in _slotConfigTemp)
+            {
+                string slotId = item.slotId;
+                string start = item.start;
+                string end = item.end;
+
+                _slotTimeLookup[slotId] = $"{start}–{end}";
+
+                int idx = ParseSlotIndexSafe(slotId);
+                if (idx > 0)
+                    listForHeader.Add((idx, slotId, start, end));
+            }
+
+            // Cập nhật header UI
+            if (listForHeader.Count > 0 && _lblSlotConfig != null)
+            {
+                var ordered = listForHeader.OrderBy(x => x.index).ToList();
+                var partsText = ordered.Select(x => $"Ca {x.index}: {x.start}–{x.end}");
+                _lblSlotConfig.Text = "Slot config: " + string.Join(" | ", partsText);
+            }
+
+            UpdateSlotTimeLabel();
+        }
+
         private async void RequestSingleSlot()
         {
             var roomId = _cbReqRoom.SelectedItem?.ToString();
-            var date = _dtReqDate.Value.Date; // hiện tại server vẫn dùng _currentDateKey, date client chỉ để hiển thị
-            var slot = _cbReqSlotSingle.SelectedItem?.ToString();
+            var slotId = _cbReqSlotSingle.SelectedItem?.ToString();
             var purpose = _txtPurpose.Text.Trim();
 
-            if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slot))
+            if (string.IsNullOrWhiteSpace(roomId) ||
+                string.IsNullOrWhiteSpace(slotId))
             {
-                MessageBox.Show("Vui lòng chọn phòng và ca.", "Request", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng chọn phòng và ca.");
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(purpose))
             {
-                MessageBox.Show("Vui lòng nhập lý do mượn phòng.", "Request", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng nhập lý do mượn phòng.");
                 return;
             }
 
             try
             {
-                using (var tcp = new TcpClient())
+                if (_writer == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        // Server hiện tại CHƯA nhận purpose, nên tạm thời chỉ gửi 4 tham số
-                        var msg = $"REQUEST|{_currentUser.UserId}|{roomId}|{slot}";
-                        AppendClientLog("[SEND] " + msg);
-                        await writer.WriteLineAsync(msg);
-
-                        var line = await reader.ReadLineAsync();
-                        if (line == null)
-                        {
-                            MessageBox.Show("No response from server.", "Request", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        AppendClientLog("[RECV] " + line);
-
-                        var parts = line.Split('|');
-                        if (parts[0] == "GRANT")
-                        {
-                            // GRANT|RoomId|SlotId|Position? (tuỳ bạn implement)
-                            _lblRequestStatus.ForeColor = Color.Green;
-                            _lblRequestStatus.Text = $"ĐÃ ĐƯỢC GRANT: Phòng {roomId} – {slot}, ngày {date:dd/MM/yyyy}.";
-                            MessageBox.Show("Yêu cầu của bạn đã được GRANT.", "Request", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                        }
-                        else if (parts[0] == "INFO" && parts.Length >= 3 && parts[1] == "QUEUED")
-                        {
-                            _lblRequestStatus.ForeColor = Color.DarkOrange;
-                            _lblRequestStatus.Text = $"Đang chờ: Phòng {roomId} – {slot} (vị trí {parts[2]} trong hàng đợi).";
-                        }
-                        else if (parts[0] == "INFO" && parts.Length >= 3 && parts[1] == "ERROR")
-                        {
-                            _lblRequestStatus.ForeColor = Color.Red;
-                            _lblRequestStatus.Text = "ERROR: " + parts[2];
-                            MessageBox.Show("Error: " + parts[2], "Request", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        }
-                        else
-                        {
-                            _lblRequestStatus.ForeColor = Color.Black;
-                            _lblRequestStatus.Text = "Response: " + line;
-                        }
-                    }
+                    MessageBox.Show("Chưa kết nối server.");
+                    return;
                 }
+
+                string msg = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotId}";
+                AppendClientLog("[SEND] " + msg);
+
+                await _writer.WriteLineAsync(msg);
+
+                // ❗ KHÔNG đọc reader ở đây — response sẽ được HandleServerMessage xử lý
+                _lblRequestStatus.ForeColor = Color.DarkBlue;
+                _lblRequestStatus.Text = "Đang gửi request... chờ server phản hồi";
+
             }
             catch (Exception ex)
             {
                 AppendClientLog("[ERROR] RequestSingleSlot: " + ex.Message);
-                MessageBox.Show("Request failed: " + ex.Message, "Request", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Request failed: " + ex.Message);
             }
         }
 
@@ -2564,9 +2594,12 @@ namespace BookingClient
             var slotTo = _cbReqSlotTo.SelectedItem?.ToString();
             var purpose = _txtPurpose.Text.Trim();
 
-            if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotFrom) || string.IsNullOrEmpty(slotTo))
+            if (string.IsNullOrWhiteSpace(roomId) ||
+                string.IsNullOrWhiteSpace(slotFrom) ||
+                string.IsNullOrWhiteSpace(slotTo))
             {
-                MessageBox.Show("Vui lòng chọn đầy đủ phòng và range ca.", "Request range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng chọn phòng và range ca.", "Request range",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2574,149 +2607,150 @@ namespace BookingClient
             int eIdx = ParseSlotIndexSafe(slotTo);
             if (eIdx < sIdx)
             {
-                MessageBox.Show("SlotEnd phải ≥ SlotStart.", "Request range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Slot kết thúc phải lớn hơn hoặc bằng slot bắt đầu.",
+                    "Request range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             if (string.IsNullOrWhiteSpace(purpose))
             {
-                MessageBox.Show("Vui lòng nhập lý do mượn phòng.", "Request range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng nhập lý do mượn phòng.", "Request range",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             try
             {
-                using (var tcp = new TcpClient())
+                // ⭐ Dùng persistent TCP – KHÔNG mở kết nối mới
+                if (_writer == null || _reader == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        var msg = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
-                        AppendClientLog("[SEND] " + msg);
-                        await writer.WriteLineAsync(msg);
-
-                        var line = await reader.ReadLineAsync();
-                        if (line == null)
-                        {
-                            MessageBox.Show("No response from server.", "Request range", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        AppendClientLog("[RECV] " + line);
-
-                        var parts = line.Split('|');
-                        if (parts[0] == "GRANT_RANGE")
-                        {
-                            _lblRequestStatus.ForeColor = Color.DarkGreen;
-                            _lblRequestStatus.Text = $"ĐÃ ĐƯỢC GRANT RANGE: Phòng {roomId} – {slotFrom} đến {slotTo}, ngày {date:dd/MM/yyyy}.";
-                        }
-                        else if (parts[0] == "INFO" && parts.Length >= 3 && parts[1] == "QUEUED")
-                        {
-                            _lblRequestStatus.ForeColor = Color.DarkOrange;
-                            _lblRequestStatus.Text = $"Đang chờ (range): Phòng {roomId} – {slotFrom}-{slotTo} (vị trí {parts[2]}).";
-                        }
-                        else if (parts[0] == "INFO" && parts.Length >= 3 && parts[1] == "ERROR")
-                        {
-                            _lblRequestStatus.ForeColor = Color.Red;
-                            _lblRequestStatus.Text = "ERROR: " + parts[2];
-                            MessageBox.Show("Error: " + parts[2], "Request range", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        }
-                        else
-                        {
-                            _lblRequestStatus.ForeColor = Color.Black;
-                            _lblRequestStatus.Text = "Response: " + line;
-                        }
-                    }
+                    MessageBox.Show("Chưa kết nối server.", "Request range",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
+
+                // ⭐ Gửi request
+                string msg = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                AppendClientLog("[SEND] " + msg);
+                await _writer.WriteLineAsync(msg);
+                _lblRequestStatus.ForeColor = Color.Blue;
+                _lblRequestStatus.Text = "Đang gửi yêu cầu range...";
+
+                // // ⭐ Nhận phản hồi
+                // string? resp = await _reader.ReadLineAsync();
+                // if (resp == null)
+                // {
+                //     MessageBox.Show("Không nhận được phản hồi từ server.", "Request range",
+                //         MessageBoxButtons.OK, MessageBoxIcon.Error);
+                //     return;
+                // }
+
+                // AppendClientLog("[RECV] " + resp);
+                // var p = resp.Split('|');
+
+                // // ============ GRANT RANGE ============
+                // if (p[0] == "GRANT_RANGE")
+                // {
+                //     _lblRequestStatus.ForeColor = Color.DarkGreen;
+                //     _lblRequestStatus.Text =
+                //         $"ĐƯỢC GRANT RANGE: {roomId} – {slotFrom} đến {slotTo} | {date:dd/MM/yyyy}";
+
+                //     MessageBox.Show("Yêu cầu range đã được GRANT.",
+                //         "Request range", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                //     return;
+                // }
+
+                // // ============ QUEUED ============
+                // if (p[0] == "INFO" && p[1] == "QUEUED" && p.Length >= 3)
+                // {
+                //     _lblRequestStatus.ForeColor = Color.DarkOrange;
+                //     _lblRequestStatus.Text =
+                //         $"Đang chờ: Phòng {roomId}, range {slotFrom}-{slotTo}, vị trí {p[2]}";
+
+                //     return;
+                // }
+
+                // // ============ ERROR ============
+                // if (p[0] == "INFO" && p[1] == "ERROR" && p.Length >= 3)
+                // {
+                //     _lblRequestStatus.ForeColor = Color.Red;
+                //     _lblRequestStatus.Text = "ERROR: " + p[2];
+
+                //     MessageBox.Show("Error: " + p[2], "Request range",
+                //         MessageBoxButtons.OK, MessageBoxIcon.Error);
+
+                //     return;
+                // }
+
+                // // ============ Unknown ============
+                // _lblRequestStatus.ForeColor = Color.Black;
+                // _lblRequestStatus.Text = "Response: " + resp;
             }
             catch (Exception ex)
             {
                 AppendClientLog("[ERROR] RequestRangeSlot: " + ex.Message);
-                MessageBox.Show("Request range failed: " + ex.Message, "Request range", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show("Request range failed: " + ex.Message,
+                    "Request range", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+
+        private void RenderHomeData()
+        {
+            // Clear UI
+            _gridTodaySchedule.Rows.Clear();
+            _lstLatestNotifications.Items.Clear();
+
+            // ---- Render Schedule ----
+            foreach (var line in _homeScheduleLines)
+            {
+                var p = line.Split('|');
+                if (p.Length >= 6)
+                {
+                    _gridTodaySchedule.Rows.Add(
+                        p[1], // time range
+                        p[2], // room
+                        p[3], // subject
+                        p[4], // teacher
+                        p[5], // status
+                        p.Length > 6 ? p[6] : ""
+                    );
+                }
+            }
+
+            // ---- Render Notifications ----
+            foreach (var msg in _homeNotificationLines)
+                _lstLatestNotifications.Items.Add(msg);
         }
 
 
         private async void ReleaseSingleSlot()
         {
             var roomId = _cbReqRoom.SelectedItem?.ToString();
-            var date = _dtReqDate.Value.Date;
             var slot = _cbReqSlotSingle.SelectedItem?.ToString();
+            var date = _dtReqDate.Value.Date;
 
-            if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slot))
+            if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(slot))
             {
-                MessageBox.Show("Vui lòng chọn phòng và ca.", "Release", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng chọn phòng và ca.");
                 return;
             }
 
-            if (_currentUser == null)
+            if (_writer == null)
             {
-                MessageBox.Show("Chưa có thông tin user.", "Release", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Chưa kết nối server.");
                 return;
             }
 
-            try
-            {
-                using (var tcp = new TcpClient())
-                {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        // RELEASE|UserId|RoomId|SlotId
-                        var msg = $"RELEASE|{_currentUser.UserId}|{roomId}|{slot}";
-                        AppendClientLog("[SEND] " + msg);
-                        await writer.WriteLineAsync(msg);
+            string msg = $"RELEASE|{_currentUser.UserId}|{roomId}|{slot}";
+            AppendClientLog("[SEND] " + msg);
+            await _writer.WriteLineAsync(msg);
 
-                        var line = await reader.ReadLineAsync();
-                        if (line == null)
-                        {
-                            MessageBox.Show("Không nhận được phản hồi từ server.", "Release", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        AppendClientLog("[RECV] " + line);
-
-                        var parts = line.Split('|');
-                        if (parts.Length >= 2 && parts[0] == "INFO")
-                        {
-                            if (parts[1] == "RELEASED")
-                            {
-                                _lblRequestStatus.ForeColor = Color.DarkGray;
-                                _lblRequestStatus.Text =
-                                    $"Đã RELEASE: {roomId} – {slot} ngày {date:dd/MM/yyyy}.";
-                            }
-                            else if (parts[1] == "ERROR" && parts.Length >= 3)
-                            {
-                                _lblRequestStatus.ForeColor = Color.Red;
-                                _lblRequestStatus.Text = "Release lỗi: " + parts[2];
-                                MessageBox.Show("Release lỗi: " + parts[2],
-                                    "Release", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            }
-                            else
-                            {
-                                _lblRequestStatus.ForeColor = Color.Black;
-                                _lblRequestStatus.Text = "Response: " + line;
-                            }
-                        }
-                        else
-                        {
-                            _lblRequestStatus.ForeColor = Color.Black;
-                            _lblRequestStatus.Text = "Response: " + line;
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                AppendClientLog("[ERROR] ReleaseSingleSlot: " + ex.Message);
-                MessageBox.Show("Release failed: " + ex.Message,
-                    "Release", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+            // ⭐ Báo UI đang gửi
+            _lblRequestStatus.ForeColor = Color.Blue;
+            _lblRequestStatus.Text = "Đang gửi yêu cầu RELEASE...";
         }
+
         private async Task ExportCurrentScheduleAsync(string type)
         {
             // Gom data theo mode hiện tại
@@ -2775,9 +2809,12 @@ namespace BookingClient
             var slotFrom = _cbReqSlotFrom.SelectedItem?.ToString();
             var slotTo = _cbReqSlotTo.SelectedItem?.ToString();
 
-            if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotFrom) || string.IsNullOrEmpty(slotTo))
+            if (string.IsNullOrWhiteSpace(roomId) ||
+                string.IsNullOrWhiteSpace(slotFrom) ||
+                string.IsNullOrWhiteSpace(slotTo))
             {
-                MessageBox.Show("Vui lòng chọn đầy đủ phòng và range ca.", "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Vui lòng chọn đầy đủ phòng và range ca.",
+                    "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
@@ -2785,68 +2822,70 @@ namespace BookingClient
             int eIdx = ParseSlotIndexSafe(slotTo);
             if (eIdx < sIdx)
             {
-                MessageBox.Show("SlotEnd phải ≥ SlotStart.", "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("SlotEnd phải ≥ SlotStart.",
+                    "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             if (_currentUser == null)
             {
-                MessageBox.Show("Chưa có thông tin user.", "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show("Chưa có thông tin user.",
+                    "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
             try
             {
-                using (var tcp = new TcpClient())
+                // ⭐ Dùng persistent TCP
+                if (_writer == null || _reader == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        // RELEASE_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                        var msg = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
-                        AppendClientLog("[SEND] " + msg);
-                        await writer.WriteLineAsync(msg);
-
-                        var line = await reader.ReadLineAsync();
-                        if (line == null)
-                        {
-                            MessageBox.Show("Không nhận được phản hồi từ server.", "Release range", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                            return;
-                        }
-
-                        AppendClientLog("[RECV] " + line);
-
-                        var parts = line.Split('|');
-                        if (parts.Length >= 2 && parts[0] == "INFO")
-                        {
-                            if (parts[1] == "RANGE_RELEASED")
-                            {
-                                _lblRequestStatus.ForeColor = Color.DarkGray;
-                                _lblRequestStatus.Text =
-                                    $"Đã RELEASE RANGE: {roomId} – {slotFrom} đến {slotTo} ngày {date:dd/MM/yyyy}.";
-                            }
-                            else if (parts[1] == "ERROR" && parts.Length >= 3)
-                            {
-                                _lblRequestStatus.ForeColor = Color.Red;
-                                _lblRequestStatus.Text = "Release RANGE lỗi: " + parts[2];
-                                MessageBox.Show("Release RANGE lỗi: " + parts[2],
-                                    "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                            }
-                            else
-                            {
-                                _lblRequestStatus.ForeColor = Color.Black;
-                                _lblRequestStatus.Text = "Response: " + line;
-                            }
-                        }
-                        else
-                        {
-                            _lblRequestStatus.ForeColor = Color.Black;
-                            _lblRequestStatus.Text = "Response: " + line;
-                        }
-                    }
+                    MessageBox.Show("Chưa kết nối server.",
+                        "Release range", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
                 }
+
+                // ⭐ Gửi lệnh RELEASE_RANGE
+                var msg = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                AppendClientLog("[SEND] " + msg);
+                await _writer.WriteLineAsync(msg);
+
+                // // ⭐ Nhận phản hồi
+                // var resp = await _reader.ReadLineAsync();
+                // if (resp == null)
+                // {
+                //     MessageBox.Show("Không nhận được phản hồi từ server.",
+                //         "Release range", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                //     return;
+                // }
+
+                // AppendClientLog("[RECV] " + resp);
+                // var p = resp.Split('|');
+
+                // // ===== RANGE RELEASED =====
+                // if (p.Length >= 2 && p[0] == "INFO" && p[1] == "RANGE_RELEASED")
+                // {
+                //     _lblRequestStatus.ForeColor = Color.DarkGray;
+                //     _lblRequestStatus.Text =
+                //         $"Đã RELEASE RANGE: {roomId} – {slotFrom} → {slotTo} | {date:dd/MM/yyyy}.";
+
+                //     return;
+                // }
+
+                // // ===== ERROR =====
+                // if (p.Length >= 3 && p[0] == "INFO" && p[1] == "ERROR")
+                // {
+                //     _lblRequestStatus.ForeColor = Color.Red;
+                //     _lblRequestStatus.Text = "Release RANGE lỗi: " + p[2];
+
+                //     MessageBox.Show("Release RANGE lỗi: " + p[2],
+                //         "Release range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+                //     return;
+                // }
+
+                // // ===== Unknown =====
+                // _lblRequestStatus.ForeColor = Color.Black;
+                // _lblRequestStatus.Text = "Response: " + resp;
             }
             catch (Exception ex)
             {
@@ -2860,70 +2899,21 @@ namespace BookingClient
         {
             try
             {
-                using (var tcp = new TcpClient())
+                if (_writer == null)
                 {
-                    await tcp.ConnectAsync(_serverIp, 5000);
-                    using (var stream = tcp.GetStream())
-                    using (var writer = new StreamWriter(stream, Encoding.UTF8) { AutoFlush = true })
-                    using (var reader = new StreamReader(stream, Encoding.UTF8))
-                    {
-                        // Gửi lệnh lấy cấu hình ca
-                        await writer.WriteLineAsync("GET_SLOT_CONFIG");
-
-                        // Clear dictionary cũ
-                        _slotTimeLookup.Clear();
-
-                        string? line;
-                        var listForHeader = new List<(int index, string slotId, string start, string end)>();
-
-                        while ((line = await reader.ReadLineAsync()) != null)
-                        {
-                            line = line.Trim();
-                            if (line.Length == 0) continue;
-                            if (line == "END_SLOT_CONFIG")
-                                break;
-
-                            // SLOT|S1|07:00|08:00
-                            var parts = line.Split('|');
-                            if (parts.Length < 4) continue;
-                            if (!string.Equals(parts[0], "SLOT", StringComparison.OrdinalIgnoreCase)) continue;
-
-                            var slotId = parts[1];   // "S1"
-                            var start = parts[2];   // "07:00"
-                            var end = parts[3];   // "08:00"
-
-                            // lưu cho UpdateSlotTimeLabel
-                            _slotTimeLookup[slotId] = $"{start}–{end}";
-
-                            // Lấy index từ "S1" -> 1
-                            var idx = ParseSlotIndexSafe(slotId);
-                            if (idx > 0)
-                            {
-                                listForHeader.Add((idx, slotId, start, end));
-                            }
-                        }
-
-                        // Cập nhật label cấu hình ca ở dưới header
-                        if (listForHeader.Count > 0 && _lblSlotConfig != null)
-                        {
-                            var ordered = listForHeader.OrderBy(x => x.index).ToList();
-                            var partsText = ordered.Select(x =>
-                                $"Ca {x.index}: {x.start}–{x.end}");
-                            _lblSlotConfig.Text = "Slot config: " + string.Join(" | ", partsText);
-                        }
-
-                        // Cập nhật lại label "Thời gian ca: ..." trong group Yêu cầu mượn phòng
-                        UpdateSlotTimeLabel();
-                    }
+                    AppendClientLog("[ERROR] Writer null khi load slot config.");
+                    return;
                 }
 
-                AppendClientLog("[INFO] Loaded slot config from server.");
+                await _writer.WriteLineAsync("GET_SLOT_CONFIG");
+                AppendClientLog("[SEND] GET_SLOT_CONFIG");
             }
             catch (Exception ex)
             {
                 AppendClientLog("[ERROR] LoadSlotConfigFromServerAsync: " + ex.Message);
             }
         }
+
 
         private void UpdateSlotConfigLabel()
         {
@@ -2936,6 +2926,360 @@ namespace BookingClient
 
             _lblSlotConfig.Text = "Cấu hình ca: " + string.Join(" | ", parts);
         }
+        private void HandleServerMessage(string line)
+        {
+            try
+            {
+                AppendClientLog("[PUSH] " + line);
+
+                // ====== 1. HOME_DATA BEGIN ======
+                if (line == "HOME_DATA_BEGIN")
+                {
+                    _isReadingHome = true;
+                    _homeScheduleLines.Clear();
+                    _homeNotificationLines.Clear();
+                    return;
+                }
+
+                // ====== 2. Đang đọc HOME_DATA block ======
+                if (_isReadingHome)
+                {
+                    if (line == "HOME_DATA_END")
+                    {
+                        _isReadingHome = false;
+                        RenderHomeData();
+                        return;
+                    }
+
+                    if (line.StartsWith("SCHEDULE|"))
+                    {
+                        _homeScheduleLines.Add(line);
+                        return;
+                    }
+
+                    if (line.StartsWith("NOTI|"))
+                    {
+                        _homeNotificationLines.Add(line.Substring(5));
+                        return;
+                    }
+
+                    return;
+                }
+
+                // ====== 3. ROOMS BEGIN ======
+                if (line == "ROOMS_BEGIN")
+                {
+                    _isReadingRooms = true;
+                    _pendingRoomsJson = "";
+                    return;
+                }
+
+                // ====== 4. Đang đọc ROOMS block ======
+                if (_isReadingRooms)
+                {
+                    if (line == "ROOMS_END")
+                    {
+                        _isReadingRooms = false;
+
+                        try
+                        {
+                            var rooms = System.Text.Json.JsonSerializer.Deserialize<List<RoomInfo>>(_pendingRoomsJson);
+                            UpdateRoomsGridOnUi(rooms);
+                        }
+                        catch (Exception ex)
+                        {
+                            MessageBox.Show("Parse JSON Room lỗi: " + ex.Message);
+                        }
+
+                        return;
+                    }
+
+                    // Thêm dòng JSON
+                    _pendingRoomsJson += line;
+                    return;
+                }
+                // ===== SLOT CONFIG BEGIN =====
+                if (line == "SLOT_CONFIG_BEGIN")
+                {
+                    _isReadingSlotConfig = true;
+                    _slotConfigTemp.Clear();
+                    return;
+                }
+                if (_isReadingSlotConfig)
+                {
+                    if (line == "END_SLOT_CONFIG")
+                    {
+                        _isReadingSlotConfig = false;
+                        ApplySlotConfig();   // <== HÀM UPDATE UI (bạn sẽ thêm bên dưới)
+                        return;
+                    }
+
+                    // Format: SLOT|S1|07:00|08:00
+                    var s = line.Split('|');
+                    if (s.Length == 4 && s[0] == "SLOT")
+                    {
+                        _slotConfigTemp.Add((s[1], s[2], s[3]));
+                    }
+                    return;
+                }
+
+                // ====== 5. PONG ======
+                if (line == "PONG")
+                {
+                    _pnlHeaderConnectDot.BackColor = Color.LimeGreen;
+                    _lblHeaderConnectText.Text = "OK";
+                    _lblHeaderConnectText.ForeColor = Color.Green;
+                    return;
+                }
+
+                // ====== 6. GRANT SINGLE ======
+                if (line.StartsWith("GRANT|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 3)
+                    {
+                        MessageBox.Show(
+                            $"Yêu cầu GRANT!\nPhòng {p[1]}, Ca {p[2]}",
+                            "GRANT",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+
+                        _lblRequestStatus.ForeColor = Color.Green;
+                        _lblRequestStatus.Text = $"GRANT: {p[1]} – {p[2]}";
+                    }
+                    return;
+                }
+
+                // ====== 7. GRANTED_FROM_QUEUE ======
+                if (line.StartsWith("GRANTED_FROM_QUEUE|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        MessageBox.Show(
+                            $"Bạn đã được GRANT từ QUEUE!\nPhòng {p[2]}, Ca {p[3]}–{p[4]}",
+                            "Queue Grant",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+
+                        _lblRequestStatus.ForeColor = Color.DarkGreen;
+                        _lblRequestStatus.Text = $"QUEUE GRANT: {p[2]} – {p[3]}-{p[4]}";
+                    }
+                    return;
+                }
+                // ====== 8.GRANT RANGE ======
+                if (line.StartsWith("GRANT_RANGE|"))
+                {
+                    var p = line.Split('|');
+                    // Format: GRANT_RANGE|RoomId|SlotFrom|SlotTo
+                    if (p.Length >= 4)
+                    {
+                        MessageBox.Show(
+                            $"Yêu cầu RANGE đã được GRANT!\nPhòng {p[1]}, Ca {p[2]}–{p[3]}",
+                            "GRANT RANGE",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+
+                        _lblRequestStatus.ForeColor = Color.DarkGreen;
+                        _lblRequestStatus.Text =
+                            $"GRANT RANGE: {p[1]} – {p[2]}-{p[3]}";
+                    }
+                    return;
+                }
+                // ====== 9.RANGE QUEUED ======
+                if (line.StartsWith("INFO|QUEUED_RANGE|"))
+                {
+                    var p = line.Split('|');
+                    // Format: INFO|QUEUED_RANGE|position
+                    if (p.Length >= 3)
+                    {
+                        _lblRequestStatus.ForeColor = Color.DarkOrange;
+                        _lblRequestStatus.Text = $"Đang chờ RANGE (vị trí {p[2]})";
+                    }
+                    return;
+                }
+                // ====== RANGE WAITING ======
+                if (line.StartsWith("RANGE_WAITING|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 2)
+                    {
+                        _lblRequestStatus.ForeColor = Color.DarkOrange;
+                        _lblRequestStatus.Text = $"Đang chờ RANGE (vị trí {p[1]})";
+
+                        AppendClientLog($"[WAIT] RANGE đang ở hàng đợi vị trí {p[1]}");
+                    }
+                    return;
+                }
+
+                // ====== 10.RANGE ERROR ======
+                if (line.StartsWith("INFO|RANGE_ERROR|"))
+                {
+                    var msg = line.Substring("INFO|RANGE_ERROR|".Length);
+
+                    _lblRequestStatus.ForeColor = Color.Red;
+                    _lblRequestStatus.Text = "Lỗi RANGE: " + msg;
+
+                    MessageBox.Show(
+                        msg,
+                        "Request range",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error
+                    );
+                    return;
+                }
+
+                // ====== 11. NOTIFY PUSH ======
+                if (line.StartsWith("NOTIFY|"))
+                {
+                    _lstLatestNotifications.Items.Add(line.Substring(7));
+                    return;
+                }
+
+                // ====== 12. UPDATE_CONTACT response ======
+                if (line == "UPDATE_CONTACT_OK")
+                {
+                    MessageBox.Show(
+                        "Cập nhật thông tin liên hệ thành công!",
+                        "Account",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+
+                    RefreshHeaderSubInfo();   // update UI header
+                    return;
+                }
+
+                if (line.StartsWith("UPDATE_CONTACT_ERR|"))
+                {
+                    var msg = line.Substring("UPDATE_CONTACT_ERR|".Length);
+                    MessageBox.Show(
+                        msg,
+                        "Account",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+                    return;
+                }
+
+                // ====== 13. NOW from server ======
+                if (line.StartsWith("NOW|"))
+                {
+                    var payload = line.Substring(4);
+                    if (DateTime.TryParse(payload, out var serverTime))
+                    {
+                        _serverTimeOffset = serverTime - DateTime.Now;
+                    }
+                    return;
+                }
+                // ====== 14. REQUEST SINGLE RESPONSE ======
+                if (line.StartsWith("INFO|QUEUED|"))
+                {
+                    var p = line.Split('|');
+                    _lblRequestStatus.ForeColor = Color.DarkOrange;
+                    _lblRequestStatus.Text = $"Đang chờ (vị trí {p[2]})";
+                    return;
+                }
+
+                if (line.StartsWith("INFO|ERROR|"))
+                {
+                    var msg = line.Substring("INFO|ERROR|".Length);
+                    _lblRequestStatus.ForeColor = Color.Red;
+                    _lblRequestStatus.Text = "Lỗi: " + msg;
+
+                    MessageBox.Show(msg, "Request", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // ======15. RELEASE SUCCESS ======
+                if (line.StartsWith("INFO|RELEASED|"))
+                {
+                    var p = line.Split('|');
+                    // Format: INFO|RELEASED|RoomId|SlotId
+                    if (p.Length >= 4)
+                    {
+                        string room = p[2];
+                        string slot = p[3];
+
+                        _lblRequestStatus.ForeColor = Color.Gray;
+                        _lblRequestStatus.Text = $"Đã RELEASE: {room} – {slot}";
+
+                        MessageBox.Show(
+                            $"Đã RELEASE phòng {room}, ca {slot}.",
+                            "Release",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+                    }
+                    return;
+                }
+
+                // ======16. RELEASE ERROR ======
+                if (line.StartsWith("INFO|RELEASE_ERROR|"))
+                {
+                    string msg = line.Substring("INFO|RELEASE_ERROR|".Length);
+
+                    _lblRequestStatus.ForeColor = Color.Red;
+                    _lblRequestStatus.Text = "Release lỗi: " + msg;
+
+                    MessageBox.Show(msg, "Release", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // =====17. RANGE RELEASE SUCCESS =====
+                if (line.StartsWith("INFO|RANGE_RELEASED|"))
+                {
+                    var p = line.Split('|');
+                    // Format: INFO|RANGE_RELEASED|RoomId|SlotFrom|SlotTo
+                    if (p.Length >= 5)
+                    {
+                        string room = p[2];
+                        string sFrom = p[3];
+                        string sTo = p[4];
+
+                        _lblRequestStatus.ForeColor = Color.Gray;
+                        _lblRequestStatus.Text = $"Đã RELEASE RANGE: {room} – {sFrom} → {sTo}";
+
+                        MessageBox.Show(
+                            $"Đã RELEASE RANGE phòng {room}, ca {sFrom}–{sTo}.",
+                            "Release Range",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
+                    }
+                    return;
+                }
+
+                // ===== 18. RANGE RELEASE ERROR =====
+                if (line.StartsWith("INFO|RANGE_RELEASE_ERROR|"))
+                {
+                    string msg = line.Substring("INFO|RANGE_RELEASE_ERROR|".Length);
+
+                    _lblRequestStatus.ForeColor = Color.Red;
+                    _lblRequestStatus.Text = "Release RANGE lỗi: " + msg;
+
+                    MessageBox.Show(
+                        msg,
+                        "Release Range",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error
+                    );
+                    return;
+                }
+
+
+                // ====== 19. UNKNOWN ======
+                AppendClientLog("[WARN] Unknown push: " + line);
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog("[ERROR] HandleServerMessage: " + ex.Message);
+            }
+        }
+
 
     }
 
