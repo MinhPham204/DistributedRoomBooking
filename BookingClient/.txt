@@ -1,0 +1,247 @@
+serverstate:
+class SlotState
+public class SlotSummary
+class ServerState
+{
+	public AppSettings Settings
+	public DateTime Now
+	public void SetDemoNow(DateTime demoNow, TextWriter log)
+	public void ResetDemoNow(TextWriter log)
+	public ServerState()
+	private void LoadSettings()
+	private void SaveSettings()
+	public void UpdateSettings(AppSettings newSettings)
+	public void SetCurrentDate(DateTime date, TextWriter log)
+	private void InitDemoData()
+	private void EnsureDateInitialized(string dateKey, TextWriter log)
+	public List<SlotSummary> GetAllSlotSummaries()
+	public (bool Success, string? UserType, string Error) ValidateUserCredentials(string userId, string password)
+	public UserInfo? FindUserByEmail(string email)
+	public bool IsAdmin(string userId)
+	public List<string> GetQueueClients(string roomId, string slotId)
+	public bool CreateFixedWeeklyClassSchedule(string subjectCode, string subjectName, string className, string roomId, DayOfWeek dayOfWeek, string slotStartId, string slotEndId, DateTime fromDate, DateTime toDate, TextWriter log, out string error)
+    public bool CreateUser(UserInfo newUser, string passwordPlain, out string error)
+	public bool CreateRoom(RoomInfo room, out string error)
+	public bool UpdateRoom(RoomInfo room, out string error)
+	public bool DeleteRoom(string roomId, out string error)
+	private int ParseSlotIndex(string slotId)
+	private (TimeSpan start, TimeSpan end) GetSlotTimeOfDay(int idx)
+	private DateTime GetSlotStartTime(string dateKey, string slotId)
+	private DateTime GetSlotEndTime(string dateKey, string slotId)
+	private void Send(NetworkStream stream, string msg)
+	public List<BookingView> GetBookingViews()
+	public List<UserInfo> GetUserViews()
+	public List<RoomDailySlotView> GetDailySchedule(DateTime date, string roomId, TextWriter log)
+	public List<RoomStats> GetRoomStatistics(DateTime fromDate, DateTime toDate)
+	private string MakeRangeKey(string roomId, string slotFrom, string slotTo)
+	public List<UserTypeStats> GetUserTypeStatistics(DateTime fromDate, DateTime toDate)
+	private Snapshot BuildSnapshot()
+	public bool SaveSnapshotToFile(string filePath, TextWriter log)
+	public bool LoadSnapshotIfExists(string filePath, TextWriter log)
+	private async Task SendSafe(NetworkStream stream, string msg)	
+	private bool ValidateUserUniqueFields(UserInfo newUser, string? ignoreUserId, out string error)
+	public bool UpdateUser(UserInfo updatedUser, out string error)
+	public bool UpdateUserContact(string userId, string? email, string? phone, out string error)
+	public bool ChangeUserPassword(string userId, string oldPassword, string newPassword, out string error)
+	public bool SetUserActive(string userId, bool isActive, out string error)
+	public bool DeleteUser(string userId, out string error)
+	private bool IsValidFaculty(string? faculty)
+	private void SendEmailSafe(string to, string subject, string body, TextWriter log)
+	private void SendEmailForBooking(Booking booking, string subject, string bodyTemplate, TextWriter log)
+	private void NotifyClientBookingChanged(string userId, string message, TextWriter log)
+	public List<SlotTimeConfigRow> GetSlotTimeConfigs()
+	public List<BookingView> GetUserSchedule(string userId, DateTime fromDate, DateTime toDate)
+    public void MapClientToUser(string clientId, string userId)
+    public string? GetUserIdForClient(string clientId)
+    public void RemoveClient(string clientId)
+	private void RaiseStateChanged()
+
+	public void HandleRequest(string clientId, string roomId, string slotId, NetworkStream stream, TextWriter log)
+
+
+	private void GrantRange(string clientId, string roomId, string slotStartId, string slotEndId, string dateKey, NetworkStream stream, TextWriter log)
+	public bool CheckInSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
+	private void GrantNextFromQueue(string dateKey, string roomId, string slotId, SlotState slot, TextWriter log)
+	public bool CompleteAndReleaseSlot(DateTime date, string roomId, string slotId, TextWriter log, out string error)
+	private bool HasCrossRoomConflict(string clientId, string dateKey, string roomIdNew, string slotIdNew,out string conflictedRoom)
+	public void RunNoShowSweep(DateTime now, TextWriter log)
+	public void HandleRequestRange(string clientId, string roomId, string slotStartId, string slotEndId, NetworkStream stream, TextWriter log)
+	public bool ForceReleaseFromServerUi(DateTime date, string roomId, string slotId, TextWriter log, out string error)
+	public bool LockSlotForEvent(DateTime date, string roomId, string slotId, string? note, TextWriter log, out string error)
+	public bool UnlockSlotFromEvent(DateTime date, string roomId, string slotId, TextWriter log, out string error)
+	public void HandleRelease(string clientId, string roomId, string slotId, NetworkStream? replyStream, TextWriter log)
+	public void HandleDisconnect(string clientId, TextWriter log)
+	private int RemoveFromQueue(SlotState slot, string clientId)
+	private Booking CreateBookingForGrant(string userId, string roomId, string dateKey, string slotStartId, string slotEndId, bool isRange, TextWriter log)
+	private void UpdateCurrentBookingStatus(SlotState slot, string roomId, string slotId, string newStatus, TextWriter log)
+	public bool ForceGrantFromServerUi(DateTime date, String roomId, string slotId, string targetUserId, TextWriter log, out string error)
+	public bool ForceGrantRangeFromServerUi(DateTime date, string roomId, string slotStartId, string slotEndId, string targetUserId, TextWriter log, out string error)
+	public bool ForceReleaseRangeFromServerUi(DateTime date, string roomId, string slotStartId, string slotEndId, TextWriter log, out string error)
+	public void HandleReleaseRange(string clientId, string roomId, string slotStartId, string slotEndId, NetworkStream replyStream, TextWriter log)
+	public BookingView? GetCurrentBookingForSlot(DateTime date, string roomId, string slotId)
+	public List<BookingView> GetTodayBookingsForUser(string userId)
+}
+
+
+////////////////////////////////////////////////
+server/form1.cs
+public class Form1 : Form
+{
+	public Form1()
+	private void SetupUi()
+	private void BuildLeftTabs()
+	private void BuildRightTabs()
+	private void BuildTabSlotDetail()
+	private void BuildTabRoomManagement()
+	private void RefreshRoomGrid(string? filterRoomId = null)
+	private void BuildTabUserManagement()
+	private void BuildTabBookingDetail()
+	private void ReloadBookingGrid()
+	private void GridBookings_CellDoubleClick(object? sender, DataGridViewCellEventArgs e)
+	private void ShowBookingDetailDialog(BookingView b)
+	private List<BookingView> GetCurrentBookingGridData()
+	private void BtnBookingExportExcel_Click(object? sender, EventArgs e)
+	private void BtnBookingExportPdf_Click(object? sender, EventArgs e)
+	private void BuildTabStatistics()
+	private void ReloadStatistics()
+	private void BuildTabSettings()
+	private void LoadSettingsToUi()
+	private void BtnSettingsSave_Click(object? sender, EventArgs e)
+	private void BuildTabLog()
+	private void DtDate_ValueChanged(object? sender, EventArgs e)
+	private async void BtnStart_Click(object? sender, EventArgs e)
+	private void NoShowTimer_Tick(object? sender, EventArgs e)
+	private async Task HandleClientAsync(TcpClient tcpClient)
+	private void StartDiscoveryListener()
+	private string? GetLocalIPv4()
+	private Task SendAsync(NetworkStream stream, string message)
+	public void Log(string text)
+	private void RefreshSlotsSafe()
+	private void RefreshSlots()
+	private void RefreshUserGrid(string? filterUserId = null)
+	private void GridSlots_SelectionChanged(object? sender, EventArgs e)
+	private void UpdateCheckinPanel()
+	private void BtnCheckIn_Click(object? sender, EventArgs e)
+	private void BtnComplete_Click(object? sender, EventArgs e)
+	private void BtnLockEvent_Click(object? sender, EventArgs e)
+	private void BtnUnlockEvent_Click(object? sender, EventArgs e)
+	private void BtnForceGrant_Click(object? sender, EventArgs e)
+	private void BtnForceRelease_Click(object? sender, EventArgs e)
+	private void BtnForceGrantRange_Click(object? sender, EventArgs e)
+	private void BtnForceReleaseRange_Click(object? sender, EventArgs e)
+	private void UpdateQueueViewForSelected()
+	private void BtnRoomAdd_Click(object? sender, EventArgs e)
+	private void BtnRoomUpdate_Click(object? sender, EventArgs e)
+	private void BtnRoomDelete_Click(object? sender, EventArgs e)
+	private void GridRooms_SelectionChanged(object? sender, EventArgs e)
+	private static string GenerateRandomPassword(int length)
+	private void SendResetEmail(string toEmail, string fullName, string newPassword)
+	private void BtnFixedApply_Click(object? sender, EventArgs e)
+	private class UiLogger : TextWriter{}
+	public class BookingListForm : Form{
+		public BookingListForm(System.Collections.Generic.List<BookingView> data)	
+	}
+	private void BtnViewBookings_Click(object? sender, EventArgs e)
+	private void Form1_FormClosing(object? sender, FormClosingEventArgs e)
+	private void WireUpUserGridEvents()
+	private void UpdateUserTypeDependentFields()
+	private void BtnAddUser_Click(object? sender, EventArgs e)
+	private void BtnUpdateUser_Click(object? sender, EventArgs e)
+	private void BtnDeleteUser_Click(object? sender, EventArgs e)
+	private void BtnRoomFilterSearch_Click(object? sender, EventArgs e)
+	
+}
+
+
+///////////////////////////////////////////
+//bookingclient/mainclientform.cs
+namespace BookingClient
+{
+	public class MainClientForm : Form{
+		private class MyScheduleItem{}
+          	private class RoomSearchRow{}
+        	public class RoomInfo{}
+		public MainClientForm(DemoUserInfo currentUser, string serverIp, LoginForm loginForm){}
+		private void InitializeComponent()
+		private void SetupUi()
+		private async Task<bool> HeaderCheckConnectAsync()
+		private async Task<bool> RequestServerNowAsync()
+		private void StartBackgroundListen()
+		private string GetVietnameseWeekday(DayOfWeek dow)
+		private void UpdateTodayLabel(DateTime now)
+		private async Task InitHeaderTimeAsync()
+		private void BuildHomeTabUi()
+		private void MainClientForm_FormClosing(object? sender, FormClosingEventArgs e)
+		private void LoadHomeDemoData()
+		private async Task LoadHomeFromServerAsync()
+		private void BuildBookingTabUi()
+		private void ApplyRoomFilter()
+		private async Task LoadRoomsFromServerAsync()
+		private void UpdateRoomsGridOnUi(List<RoomInfo>? rooms)
+		private void InitBookingTabData()
+		private void UpdateSlotTimeLabel()
+		private int ParseSlotIndexSafe(string? slotId)
+		private void BuildScheduleTabUi()
+		private void ReloadScheduleForSelectedDate()
+		private void UpdateScheduleViewMode()
+		private DateTime GetMondayOfWeek(DateTime d)
+		private string GetTimeRangeForSlot(int slot)
+		private async Task ReloadScheduleFromServerAsync()
+		private async Task<List<MyScheduleItem>> LoadMyScheduleFromServerAsync(DateTime fromDate, DateTime toDate)
+		private void FillDayView(DateTime selectedDate, List<MyScheduleItem> weekItems)
+		private void FillWeekView(DateTime selectedDate, List<MyScheduleItem> weekItems)
+		private void ExportCurrentSchedule()
+		private void ExportDayScheduleToFile(string filePath)
+		private void ExportDayScheduleToFile(string filePath)
+		private void ExportWeekScheduleToFile(string filePath)
+		private void BuildNotificationsTabUi()
+		private void BuildAccountTabUi()
+		private void RefreshHeaderSubInfo()
+		private async Task UpdateContactAsync()
+		private async Task ChangePasswordAsync()
+		private async Task AccountCheckConnectAsync()
+		private void PrefillRequestFromSelectedRoom()
+		private void AppendClientLog(string message)
+		private void ApplySlotConfig()
+		private async void RequestSingleSlot()
+		private async void RequestRangeSlot()
+		private void RenderHomeData()
+		private async void ReleaseSingleSlot()
+		private async void ReleaseRangeSlot()
+		private async Task LoadSlotConfigFromServerAsync()
+		private void HandleServerMessage(string line)
+        private async Task ReloadSlotsForSelectedRoomAsync()
+        private async Task ReloadMyBookingsAsync()
+        private void RenderRoomSlots()
+        private void RenderMyBookings()
+        private async void BtnRequest_Click(object? sender, EventArgs e)
+        private async void BtnReleaseBooking_Click(object? sender, EventArgs e)
+        private bool IsActiveBookingStatus(string? status)
+        private bool IsGrantedBookingStatus(string? status)
+        private bool IsSlotGrantedToMe(int slotIdx, string dateKey)
+        private void HighlightSlotsOfMyBookingsInCurrentRoom()
+        private void RenderMyBookings()
+        private void RenderRoomSlots()
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////
+//bookingclient/loginform.cs
+namespace BookingClient
+{
+    public class LoginForm : Form
+    {
+        public LoginForm()
+        private void LoadRememberedLogin()
+        private void SaveRememberedLogin(string userId)
+        private void InitializeComponent()
+        private void SetupUi()
+        private async void BtnLogin_Click(object? sender, EventArgs e)
+        private async Task CheckConnectAsync()
+    }
+    public class DemoUserInfo
+    {
+
+    }
+}
+

@@ -8,6 +8,10 @@ using System.Threading.Tasks;
 using System.Drawing.Drawing2D;
 using System.IO;
 using System.Collections.Generic;
+using System.Windows.Forms;
+using System.ComponentModel;
+using System.Linq;
+
 // ĐẶT ALIAS RÕ RÀNG ĐỂ HẾT LỖI AMBIGUOUS TIMER
 using WinFormsTimer = System.Windows.Forms.Timer;
 
@@ -169,6 +173,58 @@ namespace BookingClient
             public string Status { get; set; }
         }
 
+        // ====== MODEL PHỤ CHO TAB ĐẶT PHÒNG ======
+        private class RoomSlotRow
+        {
+            public bool Selected { get; set; }          // tick để request
+            public string SlotId { get; set; } = "";    // S1..S14
+            public string TimeRange { get; set; } = ""; // 07:00-08:00
+            public string Status { get; set; } = "";    // FREE / BUSY
+            public string HolderName { get; set; } = ""; // tên người giữ
+            public string Purpose { get; set; } = "";
+            public string UserId { get; set; } = "";     // để biết có phải mình không
+            public string BookingStatus { get; set; } = ""; // APPROVED / IN_USE / WAITING / QUEUED...
+
+        }
+
+        private class MyBookingRow
+        {
+            public Guid BookingId { get; set; }
+            public string Date { get; set; } = "";        // yyyy-MM-dd
+            public string RoomId { get; set; } = "";
+            public string TimeRange { get; set; } = "";
+            public string SlotStartId { get; set; } = "";
+            public string SlotEndId { get; set; } = "";
+            public string Status { get; set; } = "";
+            public string Purpose { get; set; } = "";
+
+            public string CreatedAt { get; set; } = "";
+            public string CheckinDeadline { get; set; } = "";
+            public string CheckinTime { get; set; } = "";
+            public string UpdatedAt { get; set; } = "";
+        }
+
+        // ====== FIELD CHO TAB ĐẶT PHÒNG MỚI ======
+        private DataGridView _gridRoomSlots = null!;
+        private DataGridView _gridMyBookings = null!;
+        private Button _btnRequest = null!;
+        private Button _btnReleaseBooking = null!;
+        private bool _isReadingRoomSlots = false;
+        private readonly List<string> _roomSlotsBuffer = new();
+
+        private bool _isReadingMyBookings = false;
+        private readonly List<string> _myBookingsBuffer = new();
+        private readonly BindingSource _bsRoomSlots = new();
+        private readonly BindingList<MyBookingRow> _myBookings = new();
+        private readonly BindingSource _bsMyBookings = new();
+
+
+        private BindingList<RoomSlotRow> _currentRoomSlots = new();
+        private Dictionary<string, int> _slotIndexById = new(); // SlotId -> index
+
+        // private readonly List<MyBookingRow> _myBookings = new();
+
+
         private readonly List<RoomSearchRow> _allRoomsForSearch = new();
 
         private readonly Dictionary<string, string> _slotTimeLookup = new();
@@ -176,7 +232,18 @@ namespace BookingClient
         private readonly DemoUserInfo _currentUser;
         private readonly string _serverIp;
         private TimeSpan _serverTimeOffset = TimeSpan.Zero;
+        private System.Windows.Forms.Timer? _autoRefreshTimer;
+        private HashSet<string>? _pendingSelectedSlotIds;
+        private bool _refreshing;
+        private bool _roomSlotsRequestInFlight = false;
+        private string? _lastRoomSlotsKey = null; // roomId|date
+        private string? _subRoomId;
+        private string? _subDateKey;
 
+        private string? _currentSubscribedRoomId;
+        private string? _currentSubscribedDateKey; // yyyy-MM-dd
+        private DateTime _lastSocketActivity = DateTime.MinValue;
+        private volatile bool _socketClosed = false;
         public MainClientForm(DemoUserInfo currentUser, string serverIp, LoginForm loginForm)
         {
             _currentUser = currentUser;
@@ -185,6 +252,7 @@ namespace BookingClient
 
             InitializeComponent(); // trống cũng được, nhưng cứ giữ cho chuẩn WinForms
             SetupUi();
+
             this.FormClosing += MainClientForm_FormClosing;
 
             // ⭐ MỞ KẾT NỐI TCP CHÍNH THỨC
@@ -194,11 +262,46 @@ namespace BookingClient
                 {
                     _tcp = new TcpClient();
                     await _tcp.ConnectAsync(_serverIp, 5000);
+                    // ✅ M6: bật keepalive ngay sau connect
+                    EnableTcpKeepAlive(_tcp.Client);
                     _stream = _tcp.GetStream();
                     _writer = new StreamWriter(_stream, Encoding.UTF8) { AutoFlush = true };
                     _reader = new StreamReader(_stream, Encoding.UTF8);
 
                     AppendClientLog("[INFO] Connected persistent TCP to server.");
+
+                    // ⭐⭐ LOGIN lại trên kết nối persistent ⭐⭐
+                    var loginCmd = $"LOGIN|{_currentUser.UserId}|{_currentUser.Password}";
+                    AppendClientLog("[SEND] " + loginCmd);
+                    await _writer.WriteLineAsync(loginCmd);
+
+                    var loginResp = await _reader.ReadLineAsync();
+                    if (loginResp == null || !loginResp.StartsWith("LOGIN_OK|"))
+                    {
+                        AppendClientLog("[ERROR] LOGIN on main TCP failed: " + (loginResp ?? "NULL"));
+                        MessageBox.Show("Không đăng nhập được trên kết nối chính.\n" + (loginResp ?? "No response"));
+                        Close();
+                        return;
+                    }
+
+                    AppendClientLog("[INFO] LOGIN on main TCP OK.");
+
+                    // ✅ M6: đánh dấu có activity ngay khi login OK
+                    _lastSocketActivity = DateTime.UtcNow;
+                    _socketClosed = false;
+                    // ⭐ M2 – SUB booking của tôi (persistent, chỉ 1 lần)
+                    await _writer.WriteLineAsync($"SUB_MY_BOOKINGS|{_currentUser.UserId}");
+                    AppendClientLog("[SEND] SUB_MY_BOOKINGS|" + _currentUser.UserId);
+                    await _writer.WriteLineAsync($"SUB_HOME|{_currentUser.UserId}");
+                    AppendClientLog("[SEND] SUB_HOME|" + _currentUser.UserId);
+
+                    // nếu bạn đã làm server SUB_ROOMS / SUB_SLOT_CONFIG thì bật luôn
+                    await _writer.WriteLineAsync("SUB_ROOMS");
+                    AppendClientLog("[SEND] SUB_ROOMS");
+
+                    await _writer.WriteLineAsync("SUB_SLOT_CONFIG");
+                    AppendClientLog("[SEND] SUB_SLOT_CONFIG");
+
                 }
                 catch (Exception ex)
                 {
@@ -218,6 +321,7 @@ namespace BookingClient
                 await LoadHomeFromServerAsync();
                 await ReloadScheduleFromServerAsync();
                 await LoadRoomsFromServerAsync();
+                await ReloadMyBookingsAsync();
             };
         }
 
@@ -316,15 +420,15 @@ namespace BookingClient
             _lblSubInfo.Text = subText;
 
 
-            _lblSubInfo = new Label
-            {
-                Left = 80,
-                Top = 35,
-                Width = 400,
-                Height = 20,
-                Text = subText
-            };
-            _panelHeader.Controls.Add(_lblSubInfo);
+            // _lblSubInfo = new Label
+            // {
+            //     Left = 80,
+            //     Top = 35,
+            //     Width = 400,
+            //     Height = 20,
+            //     Text = subText
+            // };
+            // _panelHeader.Controls.Add(_lblSubInfo);
 
             _lblToday = new Label
             {
@@ -420,15 +524,10 @@ namespace BookingClient
             {
                 var now = DateTime.Now + _serverTimeOffset;
                 _lblRunningTime.Text = "Time: " + now.ToString("HH:mm:ss");
+                UpdateTodayLabel(now); // <-- thêm dòng này
+
             };
             _timerClock.Start();
-            // Timer định kỳ đồng bộ lại giờ với server
-            _timerTimeSync = new WinFormsTimer { Interval = 3000 };
-            _timerTimeSync.Tick += async (s, e) =>
-            {
-                await RequestServerNowAsync();
-            };
-            _timerTimeSync.Start();
             // ====== SUB HEADER: cấu hình ca ======
             _panelSubHeader = new Panel
             {
@@ -496,38 +595,18 @@ namespace BookingClient
             // Khởi tạo thời gian header theo server
             // _ = InitHeaderTimeAsync();
         }
-        private async Task<bool> HeaderCheckConnectAsync()
+        private Task<bool> HeaderCheckConnectAsync()
         {
-            try
-            {
-                if (_writer == null)
-                {
-                    _pnlHeaderConnectDot.BackColor = Color.Red;
-                    _lblHeaderConnectText.Text = "Lost";
-                    _lblHeaderConnectText.ForeColor = Color.Red;
-                    return false;
-                }
+            bool ok =
+                _writer != null &&
+                _tcp != null &&
+                _tcp.Connected &&
+                !_socketClosed &&
+                (DateTime.UtcNow - _lastSocketActivity) < TimeSpan.FromMinutes(2);
 
-                // ⭐ Chỉ gửi PING — không đọc phản hồi
-                await _writer.WriteLineAsync("PING");
-
-                // ⭐ Tạm thời đánh dấu "Checking..."
-                _pnlHeaderConnectDot.BackColor = Color.Gold;
-                _lblHeaderConnectText.Text = "Checking...";
-                _lblHeaderConnectText.ForeColor = Color.DarkGoldenrod;
-
-                return true; // tạm coi gửi PING thành công
-            }
-            catch
-            {
-                _pnlHeaderConnectDot.BackColor = Color.Red;
-                _lblHeaderConnectText.Text = "Lost";
-                _lblHeaderConnectText.ForeColor = Color.Red;
-                return false;
-            }
+            // update UI dot/text giống bạn đang làm
+            return Task.FromResult(ok);
         }
-
-
 
         private async Task<bool> RequestServerNowAsync()
         {
@@ -554,13 +633,21 @@ namespace BookingClient
                     while (true)
                     {
                         string? line = await _reader.ReadLineAsync();
-                        if (line == null) break;
+                        if (line == null)
+                        {
+                            _socketClosed = true;
+                            break;
+                        }
 
-                        Invoke(new Action(() => HandleServerMessage(line)));
+                        _lastSocketActivity = DateTime.UtcNow;
+
+                        if (!IsDisposed && IsHandleCreated)
+                            BeginInvoke(new Action(() => HandleServerMessage(line)));
                     }
                 }
                 catch (Exception ex)
                 {
+                    _socketClosed = true;
                     AppendClientLog("[ERROR] BackgroundListen: " + ex.Message);
                 }
             });
@@ -588,11 +675,8 @@ namespace BookingClient
         }
         private async Task InitHeaderTimeAsync()
         {
-            // yêu cầu server gửi NOW
-            await RequestServerNowAsync();
-
-            // tạm dùng giờ máy, lát nữa khi server gửi NOW thì offset sẽ cập nhật lại
-            UpdateTodayLabel(DateTime.Now);
+            await RequestServerNowAsync();   // 1 lần duy nhất lúc init
+            UpdateTodayLabel(DateTime.Now + _serverTimeOffset); // tạm
         }
 
         // ================== 2.3. TAB TRANG CHỦ ==================
@@ -756,16 +840,16 @@ namespace BookingClient
         // ================== 2.4. TAB ĐẶT PHÒNG ==================
         private void BuildBookingTabUi()
         {
-            _tabBooking.AutoScroll = true;   // cho phép cuộn nếu cao quá
+            _tabBooking.AutoScroll = true;
 
-            // ======== (A) Nhóm TÌM PHÒNG TRỐNG (trên) ========
+            // ================= A. FILTER + LIST PHÒNG =================
             var grpSearch = new GroupBox
             {
-                Text = "Tìm phòng trống",
+                Text = "Danh sách phòng",
                 Left = 10,
-                Top = 100,
+                Top = 90,
                 Width = 950,
-                Height = 200
+                Height = 140
             };
             _tabBooking.Controls.Add(grpSearch);
 
@@ -774,7 +858,7 @@ namespace BookingClient
             {
                 Text = "Ngày:",
                 Left = 10,
-                Top = 25,
+                Top = 70,
                 Width = 50
             };
             grpSearch.Controls.Add(lblDate);
@@ -782,64 +866,51 @@ namespace BookingClient
             _dtBookingDate = new DateTimePicker
             {
                 Left = 70,
-                Top = 20,
+                Top = 70,
                 Width = 130,
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "dd/MM/yyyy"
             };
             grpSearch.Controls.Add(_dtBookingDate);
 
-            // Từ ca – Đến ca
-            var lblFromSlot = new Label
+            // Building
+            var lblBuilding = new Label
             {
-                Text = "Từ ca:",
+                Text = "Tòa nhà:",
                 Left = 220,
-                Top = 25,
-                Width = 50
-            };
-            grpSearch.Controls.Add(lblFromSlot);
-
-            _cbBookingFromSlot = new ComboBox
-            {
-                Left = 270,
-                Top = 20,
-                Width = 80,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            grpSearch.Controls.Add(_cbBookingFromSlot);
-
-            var lblToSlot = new Label
-            {
-                Text = "Đến ca:",
-                Left = 360,
-                Top = 25,
+                Top = 70,
                 Width = 60
             };
-            grpSearch.Controls.Add(lblToSlot);
+            grpSearch.Controls.Add(lblBuilding);
 
-            _cbBookingToSlot = new ComboBox
+            _cbBuilding = new ComboBox
             {
-                Left = 420,
-                Top = 20,
-                Width = 80,
+                Left = 290,
+                Top = 70,
+                Width = 200,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
-            grpSearch.Controls.Add(_cbBookingToSlot);
+            grpSearch.Controls.Add(_cbBuilding);
+            _cbBuilding.Items.Clear();
+            _cbBuilding.Items.Add("ALL");
+            _cbBuilding.Items.Add("CS1 - Tòa A");
+            _cbBuilding.Items.Add("CS1 - Tòa B");
+            _cbBuilding.SelectedIndex = 0;
 
             // Sức chứa
             var lblCapacity = new Label
             {
                 Text = "Sức chứa ≥",
-                Left = 10,
-                Top = 60,
+                Left = 520,
+                Top = 70,
                 Width = 80
             };
             grpSearch.Controls.Add(lblCapacity);
 
             _numMinCapacity = new NumericUpDown
             {
-                Left = 90,
-                Top = 55,
+                Left = 600,
+                Top = 70,
                 Width = 80,
                 Minimum = 0,
                 Maximum = 500,
@@ -847,289 +918,343 @@ namespace BookingClient
             };
             grpSearch.Controls.Add(_numMinCapacity);
 
-            // Checkboxes thiết bị
+            // Nút load phòng
+            _btnSearchRooms = new Button
+            {
+                Text = "Load phòng",
+                Left = 720,
+                Top = 90,
+                Width = 200,
+                Height = 30
+            };
+            grpSearch.Controls.Add(_btnSearchRooms);
+
+            // ===== Hàng 2: checkbox filter theo tiện nghi =====
             _chkNeedProjector = new CheckBox
             {
-                Text = "Có máy chiếu",
-                Left = 200,
-                Top = 58,
-                Width = 110
+                Text = "Cần máy chiếu",
+                Left = 10,
+                Top = 90,
+                Width = 130
             };
             grpSearch.Controls.Add(_chkNeedProjector);
-
             _chkNeedPC = new CheckBox
             {
-                Text = "Có máy tính",
-                Left = 320,
-                Top = 58,
+                Text = "Cần PC",
+                Left = 160,
+                Top = 90,
                 Width = 100
             };
             grpSearch.Controls.Add(_chkNeedPC);
-
             _chkNeedAC = new CheckBox
             {
-                Text = "Có máy lạnh",
-                Left = 440,
-                Top = 58,
-                Width = 100
+                Text = "Cần điều hòa",
+                Left = 270,
+                Top = 90,
+                Width = 120
             };
             grpSearch.Controls.Add(_chkNeedAC);
-
             _chkNeedMic = new CheckBox
             {
-                Left = 440 + 120,
-                Top = 58,
-                Width = 100,
-                Text = "Mic"
+                Text = "Cần micro",
+                Left = 410,
+                Top = 90,
+                Width = 120
             };
             grpSearch.Controls.Add(_chkNeedMic);
 
+            // Sự kiện filter: chỉ gọi ApplyRoomFilter (không gửi lệnh mới lên server)
+            _cbBuilding.SelectedIndexChanged += (s, e) => ApplyRoomFilter();
+            _numMinCapacity.ValueChanged += (s, e) => ApplyRoomFilter();
+            _chkNeedProjector.CheckedChanged += (s, e) => ApplyRoomFilter();
+            _chkNeedPC.CheckedChanged += (s, e) => ApplyRoomFilter();
+            _chkNeedAC.CheckedChanged += (s, e) => ApplyRoomFilter();
+            _chkNeedMic.CheckedChanged += (s, e) => ApplyRoomFilter();
 
-            // Building
-            var lblBuilding = new Label
-            {
-                Text = "Tòa nhà:",
-                Left = 10,
-                Top = 95,
-                Width = 60
-            };
-            grpSearch.Controls.Add(lblBuilding);
-
-            _cbBuilding = new ComboBox
-            {
-                Left = 80,
-                Top = 90,
-                Width = 200,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            grpSearch.Controls.Add(_cbBuilding);
-
-            // Nút Tìm phòng trống
-            _btnSearchRooms = new Button
-            {
-                Text = "Tìm phòng trống",
-                Left = 750,
-                Top = 25,
-                Width = 150,
-                Height = 40
-            };
-            grpSearch.Controls.Add(_btnSearchRooms);
             _btnSearchRooms.Click += async (s, e) =>
             {
                 await LoadRoomsFromServerAsync();
-                ApplyRoomFilter();
+                // ApplyRoomFilter();
             };
 
-            // ===== Grid kết quả phòng =====
+            // ===== Grid phòng =====
             _gridRooms = new DataGridView
             {
                 Left = 10,
                 Top = grpSearch.Bottom + 5,
-                Width = 950,
-                Height = 160,
+                Width = 450,
+                Height = 220,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
                 MultiSelect = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                AutoGenerateColumns = false
             };
             _tabBooking.Controls.Add(_gridRooms);
 
             _gridRooms.Columns.Clear();
-            _gridRooms.Columns.Add("RoomId", "Phòng");
-            _gridRooms.Columns.Add("Building", "Tòa nhà");
-            _gridRooms.Columns.Add("Capacity", "Sức chứa");
-            _gridRooms.Columns.Add("Projector", "Projector");
-            _gridRooms.Columns.Add("PC", "PC");
-            _gridRooms.Columns.Add("AC", "AC");
-            _gridRooms.Columns.Add("Mic", "Mic");
-            _gridRooms.Columns.Add("Status", "Trạng thái");
-
-            _gridRooms.DoubleClick += (s, e) =>
+            _gridRooms.Columns.Add(new DataGridViewTextBoxColumn
             {
-                PrefillRequestFromSelectedRoom();
+                Name = "RoomId",
+                HeaderText = "Phòng",
+                DataPropertyName = "RoomId"
+            });
+            _gridRooms.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Building",
+                HeaderText = "Tòa nhà",
+                DataPropertyName = "Building"
+            });
+            _gridRooms.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Capacity",
+                HeaderText = "Sức chứa",
+                DataPropertyName = "Capacity"
+            });
+            _gridRooms.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Status",
+                HeaderText = "Trạng thái",
+                DataPropertyName = "Status"
+            });
+
+            _gridRooms.SelectionChanged += async (s, e) =>
+            {
+                if (_gridRooms.CurrentRow == null) return;
+
+                var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+                if (string.IsNullOrEmpty(roomId)) return;
+
+                var date = _dtBookingDate.Value;
+
+                // ⭐ M2 – SUB theo màn hình
+                await UpdateRoomSlotsSubscriptionAsync(roomId, date);
+
+                await ReloadSlotsForSelectedRoomAsync();
             };
 
-            // ======== (B) Nhóm YÊU CẦU MƯỢN PHÒNG (dưới) ========
-            _grpRequest = new GroupBox
+            _dtBookingDate.ValueChanged += async (s, e) =>
             {
-                Text = "Yêu cầu mượn phòng",
+                if (_gridRooms.CurrentRow == null) return;
+
+                var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+                if (string.IsNullOrEmpty(roomId)) return;
+
+                await UpdateRoomSlotsSubscriptionAsync(roomId, _dtBookingDate.Value);
+            };
+
+            // ================= B. SLOT LIST CỦA PHÒNG =================
+            var grpSlots = new GroupBox
+            {
+                Text = "Slot trong ngày của phòng",
+                Left = _gridRooms.Right + 10,
+                Top = grpSearch.Bottom + 5,
+                Width = 510,
+                Height = 220
+            };
+            _tabBooking.Controls.Add(grpSlots);
+
+            _gridRoomSlots = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = false,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                AutoGenerateColumns = false
+            };
+            grpSlots.Controls.Add(_gridRoomSlots);
+            _gridRoomSlots.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (_gridRoomSlots.IsCurrentCellDirty)
+                {
+                    _gridRoomSlots.EndEdit();
+                    _gridRoomSlots.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+
+            _gridRoomSlots.Columns.Clear();
+            _gridRoomSlots.Columns.Add(new DataGridViewCheckBoxColumn
+            {
+                Name = "Selected",
+                HeaderText = "",
+                Width = 40,
+                DataPropertyName = "Selected"
+            });
+            _gridRoomSlots.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "SlotId",
+                HeaderText = "Slot",
+                DataPropertyName = "SlotId"
+            });
+            _gridRoomSlots.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "TimeRange",
+                HeaderText = "Giờ",
+                DataPropertyName = "TimeRange"
+            });
+            _gridRoomSlots.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Status",
+                HeaderText = "Trạng thái",
+                DataPropertyName = "Status"
+            });
+            _gridRoomSlots.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "HolderName",
+                HeaderText = "Người giữ",
+                DataPropertyName = "HolderName"
+            });
+            _gridRoomSlots.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "Purpose",
+                HeaderText = "Mục đích",
+                DataPropertyName = "Purpose"
+            });
+            _bsRoomSlots.DataSource = _currentRoomSlots;
+            _gridRoomSlots.DataSource = _bsRoomSlots;
+
+            // ================= C. BOOKING CỦA TÔI + NÚT REQUEST / RELEASE =================
+            var grpMyBookings = new GroupBox
+            {
+                Text = "Booking của tôi",
                 Left = 10,
-                Top = _gridRooms.Bottom + 5,
-                Width = 650,
-                Height = 200
+                Top = _gridRooms.Bottom + 10,
+                Width = 950,
+                Height = 230
             };
-            _tabBooking.Controls.Add(_grpRequest);
+            _tabBooking.Controls.Add(grpMyBookings);
 
-            // Phòng
-            var lblReqRoom = new Label
+            _gridMyBookings = new DataGridView
             {
-                Text = "Phòng:",
                 Left = 10,
-                Top = 25,
-                Width = 50
-            };
-            _grpRequest.Controls.Add(lblReqRoom);
-
-            _cbReqRoom = new ComboBox
-            {
-                Left = 70,
                 Top = 20,
-                Width = 120,
-                DropDownStyle = ComboBoxStyle.DropDownList
+                Width = 720,
+                Height = 220,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                AutoGenerateColumns = false,
+                ScrollBars = ScrollBars.Both
             };
-            _grpRequest.Controls.Add(_cbReqRoom);
+            grpMyBookings.Controls.Add(_gridMyBookings);
 
-            // Ngày
-            var lblReqDate = new Label
+            _gridMyBookings.Columns.Clear();
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Text = "Ngày:",
-                Left = 210,
-                Top = 25,
-                Width = 50
-            };
-            _grpRequest.Controls.Add(lblReqDate);
-
-            _dtReqDate = new DateTimePicker
+                Name = "Date",
+                HeaderText = "Ngày",
+                DataPropertyName = "Date"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Left = 260,
-                Top = 20,
-                Width = 120,
-                Format = DateTimePickerFormat.Custom,
-                CustomFormat = "dd/MM/yyyy"
-            };
-            _grpRequest.Controls.Add(_dtReqDate);
-
-            // Ca single
-            var lblReqSlotSingle = new Label
+                Name = "RoomId",
+                HeaderText = "Phòng",
+                DataPropertyName = "RoomId"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Text = "Ca:",
-                Left = 10,
-                Top = 60,
-                Width = 40
-            };
-            _grpRequest.Controls.Add(lblReqSlotSingle);
-
-            _cbReqSlotSingle = new ComboBox
+                Name = "TimeRange",
+                HeaderText = "Giờ",
+                DataPropertyName = "TimeRange"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Left = 70,
-                Top = 55,
-                Width = 100,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            _grpRequest.Controls.Add(_cbReqSlotSingle);
-
-            // Range ca: từ – đến
-            var lblReqRange = new Label
+                Name = "Status",
+                HeaderText = "Trạng thái",
+                DataPropertyName = "Status"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Text = "Range ca:",
-                Left = 210,
-                Top = 60,
-                Width = 70
-            };
-            _grpRequest.Controls.Add(lblReqRange);
-
-            _cbReqSlotFrom = new ComboBox
+                Name = "Purpose",
+                HeaderText = "Mục đích",
+                DataPropertyName = "Purpose"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Left = 290,
-                Top = 55,
-                Width = 80,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            _grpRequest.Controls.Add(_cbReqSlotFrom);
-
-            _cbReqSlotTo = new ComboBox
+                Name = "CreatedAt",
+                HeaderText = "Tạo lúc",
+                DataPropertyName = "CreatedAt"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
             {
-                Left = 380,
-                Top = 55,
-                Width = 80,
-                DropDownStyle = ComboBoxStyle.DropDownList
-            };
-            _grpRequest.Controls.Add(_cbReqSlotTo);
+                Name = "CheckinDeadline",
+                HeaderText = "Hạn check-in",
+                DataPropertyName = "CheckinDeadline"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "CheckinTime",
+                HeaderText = "Check-in lúc",
+                DataPropertyName = "CheckinTime"
+            });
+            _gridMyBookings.Columns.Add(new DataGridViewTextBoxColumn
+            {
+                Name = "UpdatedAt",
+                HeaderText = "Cập nhật",
+                DataPropertyName = "UpdatedAt"
+            });
 
-            // Lý do
+            _bsMyBookings.DataSource = _myBookings;
+            _gridMyBookings.DataSource = _bsMyBookings;
+
+            // Text lý do
             var lblPurpose = new Label
             {
                 Text = "Lý do:",
-                Left = 10,
-                Top = 95,
+                Left = 740,
+                Top = 30,
                 Width = 50
             };
-            _grpRequest.Controls.Add(lblPurpose);
+            grpMyBookings.Controls.Add(lblPurpose);
 
             _txtPurpose = new TextBox
             {
-                Left = 70,
-                Top = 90,
-                Width = 390,
-                Height = 60,
+                Left = 740,
+                Top = 50,
+                Width = 190,
+                Height = 80,
                 Multiline = true
             };
-            _grpRequest.Controls.Add(_txtPurpose);
+            grpMyBookings.Controls.Add(_txtPurpose);
 
-            // Label thời gian ca
-            _lblSlotTimeRange = new Label
+            // Nút REQUEST
+            _btnRequest = new Button
             {
-                Text = "Thời gian ca: -",
-                Left = 10,
-                Top = 160,
-                Width = 450,
-                ForeColor = Color.Gray
-            };
-            _grpRequest.Controls.Add(_lblSlotTimeRange);
-
-            // Nút REQUEST / RELEASE
-            _btnReqSingle = new Button
-            {
-                Text = "REQUEST (single)",
-                Left = 470,
-                Top = 25,
-                Width = 150,
+                Text = "REQUEST",
+                Left = 740,
+                Top = 140,
+                Width = 90,
                 Height = 30
             };
-            _grpRequest.Controls.Add(_btnReqSingle);
-            _btnReqSingle.Click += (s, e) => RequestSingleSlot();
+            grpMyBookings.Controls.Add(_btnRequest);
+            _btnRequest.Click += BtnRequest_Click;
 
-            _btnReqRange = new Button
+            // Nút RELEASE booking
+            _btnReleaseBooking = new Button
             {
-                Text = "REQUEST RANGE",
-                Left = 470,
-                Top = 60,
-                Width = 150,
+                Text = "RELEASE",
+                Left = 840,
+                Top = 140,
+                Width = 90,
                 Height = 30
             };
-            _grpRequest.Controls.Add(_btnReqRange);
-            _btnReqRange.Click += (s, e) => RequestRangeSlot();
+            grpMyBookings.Controls.Add(_btnReleaseBooking);
+            _btnReleaseBooking.Click += BtnReleaseBooking_Click;
 
-            _btnReleaseSingle = new Button
-            {
-                Text = "RELEASE(single)",
-                Left = 470,
-                Top = 95,
-                Width = 150,
-                Height = 30
-            };
-            _grpRequest.Controls.Add(_btnReleaseSingle);
-            _btnReleaseSingle.Click += (s, e) => ReleaseSingleSlot();
-
-            _btnReleaseRange = new Button
-            {
-                Text = "RELEASE RANGE",
-                Left = 470,
-                Top = 130,
-                Width = 150,
-                Height = 30
-            };
-            _grpRequest.Controls.Add(_btnReleaseRange);
-            _btnReleaseRange.Click += (s, e) => ReleaseRangeSlot();
-
-            // Status label to
+            // Label status
             _lblRequestStatus = new Label
             {
                 Text = "Chưa có yêu cầu.",
                 Left = 10,
-                Top = _grpRequest.Bottom + 5,
+                Top = grpMyBookings.Bottom + 5,
                 Width = 800,
                 ForeColor = Color.DarkGray,
                 Font = new Font(FontFamily.GenericSansSerif, 10, FontStyle.Bold)
@@ -1143,7 +1268,7 @@ namespace BookingClient
                 Left = 10,
                 Top = _lblRequestStatus.Bottom + 5,
                 Width = 950,
-                Height = 100
+                Height = 120
             };
             _tabBooking.Controls.Add(_grpClientLog);
 
@@ -1155,15 +1280,14 @@ namespace BookingClient
             };
             _grpClientLog.Controls.Add(_txtClientLog);
 
-            // ===== Nút quay về Trang chủ =====
+            // Nút Về Trang chủ
             _btnBackToHome = new Button
             {
                 Text = "← Về Trang chủ",
                 Width = 120,
                 Height = 30,
-                Left = 840,   // toạ độ X cố định (bạn có thể chỉnh lại cho đẹp)
-                Top = 850,   // đảm bảo > 200, nằm phía dưới tab Booking
-                Anchor = AnchorStyles.Top | AnchorStyles.Left   // hoặc bỏ hẳn Anchor cũng được
+                Left = 840,
+                Top = _grpClientLog.Bottom + 5
             };
             _tabBooking.Controls.Add(_btnBackToHome);
 
@@ -1171,8 +1295,48 @@ namespace BookingClient
             {
                 _tabMain.SelectedTab = _tabHome;
             };
-            // Khởi tạo dữ liệu cho các combobox, building, room...
-            InitBookingTabData();
+
+            // InitBookingTabData();      // dùng lại init cũ nhưng chỉ lấy SlotConfig + Building
+        }
+        private async Task ReloadSlotsForSelectedRoomAsync()
+        {
+            if (_roomSlotsRequestInFlight) return;
+            if (_gridRooms.CurrentRow == null) return;
+
+            var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+            if (string.IsNullOrWhiteSpace(roomId)) return;
+
+            var date = _dtBookingDate.Value.Date.ToString("yyyy-MM-dd");
+            var key = roomId + "|" + date;
+
+            if (_writer == null) return;
+
+            // ✅ CHỐNG CHỒNG REQUEST
+            if (_roomSlotsRequestInFlight && _lastRoomSlotsKey == key)
+                return;
+
+            _roomSlotsRequestInFlight = true;
+            _lastRoomSlotsKey = key;
+
+            string cmd = $"GET_ROOM_DAILY_SLOTS|{roomId}|{date}";
+            AppendClientLog("[SEND] " + cmd);
+            await _writer.WriteLineAsync(cmd);
+        }
+
+        private async Task ReloadMyBookingsAsync()
+        {
+            if (_currentUser == null)
+                return;
+
+            if (_writer == null)
+            {
+                MessageBox.Show("Chưa kết nối server.");
+                return;
+            }
+
+            string cmd = $"GET_MY_BOOKINGS|{_currentUser.UserId}";
+            AppendClientLog("[SEND] " + cmd);
+            await _writer.WriteLineAsync(cmd);
         }
 
         private void ApplyRoomFilter()
@@ -1233,8 +1397,11 @@ namespace BookingClient
                 });
             }
 
-            _gridRooms.DataSource = null;
-            _gridRooms.DataSource = _allRoomsForSearch;
+            // _gridRooms.DataSource = null;
+            // _gridRooms.DataSource = _allRoomsForSearch;
+
+            ApplyRoomFilter();
+
         }
 
         private void InitBookingTabData()
@@ -1339,6 +1506,15 @@ namespace BookingClient
 
         private void UpdateSlotTimeLabel()
         {
+            // Nếu chưa làm UI cho phần request thì mấy control này vẫn null,
+            // ta bỏ qua cho an toàn.
+            if (_lblSlotTimeRange == null ||
+                _cbReqSlotSingle == null ||
+                _cbReqSlotFrom == null ||
+                _cbReqSlotTo == null)
+            {
+                return;
+            }
             string GetTime(string slotId)
             {
                 return _slotTimeLookup.TryGetValue(slotId, out var t) ? t : "?";
@@ -1569,95 +1745,6 @@ namespace BookingClient
             var start = new TimeSpan(7 + (slot - 1), 0, 0);
             var end = start.Add(TimeSpan.FromHours(1));
             return $"{start:hh\\:mm}–{end:hh\\:mm}";
-        }
-
-
-        // Sinh dữ liệu DEMO cho 1 tuần xung quanh ngày được chọn
-        private List<MyScheduleItem> BuildDemoScheduleForWeek(DateTime anyDayInWeek)
-        {
-            var list = new List<MyScheduleItem>();
-            var monday = GetMondayOfWeek(anyDayInWeek);
-
-            if (_currentUser.UserType == "Student")
-            {
-                // Ví dụ lịch học cố định trong tuần
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday,            // Thứ 2
-                    Slot = 1,
-                    TimeRange = GetTimeRangeForSlot(1),
-                    RoomId = "A08",
-                    Subject = "CTDL & GT",
-                    Status = "APPROVED",
-                    Note = "Học lý thuyết"
-                });
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday.AddDays(2), // Thứ 4
-                    Slot = 3,
-                    TimeRange = GetTimeRangeForSlot(3),
-                    RoomId = "A16",
-                    Subject = ".NET Programming",
-                    Status = "IN_USE",
-                    Note = "Thực hành"
-                });
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday.AddDays(4), // Thứ 6
-                    Slot = 5,
-                    TimeRange = GetTimeRangeForSlot(5),
-                    RoomId = "B05",
-                    Subject = "Project meeting",
-                    Status = "NO_SHOW",
-                    Note = "Demo trạng thái NO_SHOW"
-                });
-            }
-            else
-            {
-                // Lecturer / Staff: ví dụ vài booking phòng
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday,            // T2
-                    Slot = 2,
-                    TimeRange = GetTimeRangeForSlot(2),
-                    RoomId = "A08",
-                    Subject = "Họp nhóm đồ án",
-                    Status = "APPROVED",
-                    Note = "Book phòng họp"
-                });
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday.AddDays(1), // T3
-                    Slot = 4,
-                    TimeRange = GetTimeRangeForSlot(4),
-                    RoomId = "A16",
-                    Subject = "Seminar Khoa CNTT",
-                    Status = "IN_USE",
-                    Note = ""
-                });
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday.AddDays(3), // T5
-                    Slot = 6,
-                    TimeRange = GetTimeRangeForSlot(6),
-                    RoomId = "B02",
-                    Subject = "Lecture OOP",
-                    Status = "COMPLETED",
-                    Note = ""
-                });
-                list.Add(new MyScheduleItem
-                {
-                    Date = monday.AddDays(5), // T7
-                    Slot = 3,
-                    TimeRange = GetTimeRangeForSlot(3),
-                    RoomId = "C01",
-                    Subject = "Workshop",
-                    Status = "NO_SHOW",
-                    Note = "Demo NO_SHOW"
-                });
-            }
-
-            return list;
         }
 
         // Load lại dữ liệu khi chọn ngày
@@ -1911,59 +1998,6 @@ namespace BookingClient
 
                     // CSV đơn giản, nếu muốn có thể escape dấu phẩy
                     writer.WriteLine($"{ca},{time},{room},{subject},{status}");
-                }
-            }
-        }
-
-
-        // Export Day View (CSV cho Excel, PDF chỉ demo)
-        private void ExportDayScheduleToFile()
-        {
-            using (var dlg = new SaveFileDialog())
-            {
-                dlg.Title = "Xuất lịch ngày";
-                dlg.Filter = "Excel CSV (*.csv)|*.csv|PDF file (*.pdf)|*.pdf";
-                dlg.FileName = "MySchedule_Day_" + _dtScheduleDate.Value.ToString("yyyyMMdd");
-
-                if (dlg.ShowDialog() != DialogResult.OK)
-                    return;
-
-                var ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
-                if (ext == ".csv")
-                {
-                    using (var sw = new StreamWriter(dlg.FileName, false, Encoding.UTF8))
-                    {
-                        // Header
-                        sw.WriteLine("Ca;Giờ;Phòng;Môn/Lý do;Trạng thái");
-
-                        foreach (DataGridViewRow row in _gridDayView.Rows)
-                        {
-                            if (row.IsNewRow) continue;
-                            var slot = row.Cells["Slot"].Value?.ToString() ?? "";
-                            var time = row.Cells["TimeRange"].Value?.ToString() ?? "";
-                            var room = row.Cells["RoomId"].Value?.ToString() ?? "";
-                            var subject = row.Cells["Subject"].Value?.ToString() ?? "";
-                            var status = row.Cells["Status"].Value?.ToString() ?? "";
-
-                            sw.WriteLine(
-                                $"{slot};{time};{room};{subject};{status}"
-                            );
-                        }
-                    }
-
-                    MessageBox.Show(
-                        "Đã xuất lịch ngày ra file CSV. Bạn có thể mở bằng Excel.",
-                        "Export schedule",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-                }
-                else if (ext == ".pdf")
-                {
-                    MessageBox.Show(
-                        "Hiện tại chưa implement export PDF. Tạm thời hãy dùng định dạng CSV để mở bằng Excel.",
-                        "Export PDF",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
                 }
             }
         }
@@ -2418,43 +2452,6 @@ namespace BookingClient
             }
         }
 
-
-        private void SearchRoomsDemo()
-        {
-            if (_allRoomsForSearch.Count == 0)
-                InitBookingTabData();
-
-            int minCap = (int)_numMinCapacity.Value;
-            bool needProj = _chkNeedProjector.Checked;
-            bool needPc = _chkNeedPC.Checked;
-            bool needAc = _chkNeedAC.Checked;
-            string building = _cbBuilding.SelectedItem?.ToString() ?? "ALL";
-
-            var filtered = _allRoomsForSearch.Where(r =>
-                r.Capacity >= minCap &&
-                (!needProj || r.HasProjector) &&
-                (!needPc || r.HasPC) &&
-                (!needAc || r.HasAC) &&
-                (building == "ALL" || r.Building == building)
-            ).ToList();
-
-            _gridRooms.Rows.Clear();
-            foreach (var r in filtered)
-            {
-                _gridRooms.Rows.Add(
-                    r.RoomId,
-                    r.Building,
-                    r.Capacity,
-                    r.HasProjector ? "✓" : "",
-                    r.HasPC ? "✓" : "",
-                    r.HasAC ? "✓" : "",
-                    r.HasMic ? "✓" : "",
-                    r.Status
-                );
-            }
-
-            AppendClientLog($"Search rooms: found {filtered.Count} rooms.");
-        }
         private async Task AccountCheckConnectAsync()
         {
             var ok = await HeaderCheckConnectAsync();
@@ -2635,57 +2632,6 @@ namespace BookingClient
                 await _writer.WriteLineAsync(msg);
                 _lblRequestStatus.ForeColor = Color.Blue;
                 _lblRequestStatus.Text = "Đang gửi yêu cầu range...";
-
-                // // ⭐ Nhận phản hồi
-                // string? resp = await _reader.ReadLineAsync();
-                // if (resp == null)
-                // {
-                //     MessageBox.Show("Không nhận được phản hồi từ server.", "Request range",
-                //         MessageBoxButtons.OK, MessageBoxIcon.Error);
-                //     return;
-                // }
-
-                // AppendClientLog("[RECV] " + resp);
-                // var p = resp.Split('|');
-
-                // // ============ GRANT RANGE ============
-                // if (p[0] == "GRANT_RANGE")
-                // {
-                //     _lblRequestStatus.ForeColor = Color.DarkGreen;
-                //     _lblRequestStatus.Text =
-                //         $"ĐƯỢC GRANT RANGE: {roomId} – {slotFrom} đến {slotTo} | {date:dd/MM/yyyy}";
-
-                //     MessageBox.Show("Yêu cầu range đã được GRANT.",
-                //         "Request range", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                //     return;
-                // }
-
-                // // ============ QUEUED ============
-                // if (p[0] == "INFO" && p[1] == "QUEUED" && p.Length >= 3)
-                // {
-                //     _lblRequestStatus.ForeColor = Color.DarkOrange;
-                //     _lblRequestStatus.Text =
-                //         $"Đang chờ: Phòng {roomId}, range {slotFrom}-{slotTo}, vị trí {p[2]}";
-
-                //     return;
-                // }
-
-                // // ============ ERROR ============
-                // if (p[0] == "INFO" && p[1] == "ERROR" && p.Length >= 3)
-                // {
-                //     _lblRequestStatus.ForeColor = Color.Red;
-                //     _lblRequestStatus.Text = "ERROR: " + p[2];
-
-                //     MessageBox.Show("Error: " + p[2], "Request range",
-                //         MessageBoxButtons.OK, MessageBoxIcon.Error);
-
-                //     return;
-                // }
-
-                // // ============ Unknown ============
-                // _lblRequestStatus.ForeColor = Color.Black;
-                // _lblRequestStatus.Text = "Response: " + resp;
             }
             catch (Exception ex)
             {
@@ -2723,7 +2669,6 @@ namespace BookingClient
                 _lstLatestNotifications.Items.Add(msg);
         }
 
-
         private async void ReleaseSingleSlot()
         {
             var roomId = _cbReqRoom.SelectedItem?.ToString();
@@ -2750,57 +2695,6 @@ namespace BookingClient
             _lblRequestStatus.ForeColor = Color.Blue;
             _lblRequestStatus.Text = "Đang gửi yêu cầu RELEASE...";
         }
-
-        private async Task ExportCurrentScheduleAsync(string type)
-        {
-            // Gom data theo mode hiện tại
-            var selectedDate = _dtScheduleDate.Value.Date;
-            var weekMonday = GetMondayOfWeek(selectedDate);
-            var weekSunday = weekMonday.AddDays(6);
-
-            var dataForWeek = await LoadMyScheduleFromServerAsync(weekMonday, weekSunday);
-            if (dataForWeek == null || dataForWeek.Count == 0)
-            {
-                dataForWeek = BuildDemoScheduleForWeek(selectedDate);
-            }
-
-            if (type == "Excel")
-            {
-                // Ở đây bạn dùng SaveFileDialog + ghi CSV (Excel mở được)
-                using (var dlg = new SaveFileDialog())
-                {
-                    dlg.Filter = "Excel (CSV)|*.csv";
-                    dlg.FileName = $"MySchedule_{weekMonday:yyyyMMdd}_{weekSunday:yyyyMMdd}.csv";
-
-                    if (dlg.ShowDialog() == DialogResult.OK)
-                    {
-                        using (var writer = new StreamWriter(dlg.FileName, false, Encoding.UTF8))
-                        {
-                            writer.WriteLine("Date,Slot,TimeRange,Room,Subject,Status,Note");
-                            foreach (var item in dataForWeek.OrderBy(x => x.Date).ThenBy(x => x.Slot))
-                            {
-                                writer.WriteLine(
-                                    $"{item.Date:yyyy-MM-dd},{item.Slot},{item.TimeRange},{item.RoomId}," +
-                                    $"{item.Subject},{item.Status},{item.Note}");
-                            }
-                        }
-
-                        MessageBox.Show(this, "Export Excel (CSV) thành công.", "Export", MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
-                    }
-                }
-            }
-            else if (type == "PDF")
-            {
-                // Nếu bạn chưa dùng thư viện PDF, cứ báo tạm:
-                MessageBox.Show(this,
-                    "Export PDF chưa implement. Bạn có thể dùng thư viện như iTextSharp / QuestPDF để xuất PDF.",
-                    "Export PDF",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-        }
-
 
         private async void ReleaseRangeSlot()
         {
@@ -2914,23 +2808,66 @@ namespace BookingClient
             }
         }
 
-
-        private void UpdateSlotConfigLabel()
-        {
-            // ví dụ hiển thị: "Cấu hình ca: S1 07:00–08:00 | S2 08:00–09:00 | ..."
-            if (_lblSlotConfig == null) return;
-
-            var parts = _slotTimeLookup
-                .OrderBy(k => ParseSlotIndexSafe(k.Key))
-                .Select(kv => $"{kv.Key} {kv.Value}");
-
-            _lblSlotConfig.Text = "Cấu hình ca: " + string.Join(" | ", parts);
-        }
         private void HandleServerMessage(string line)
         {
             try
             {
                 AppendClientLog("[PUSH] " + line);
+                //////////////////////////////////////
+                if (line.StartsWith("PUSH_HOME_DATA_CHANGED|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 2 && _currentUser != null &&
+                        string.Equals(p[1], _currentUser.UserId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try { await LoadHomeFromServerAsync(); }
+                            catch (Exception ex) { AppendClientLog("[ERROR] LoadHomeFromServerAsync: " + ex.Message); }
+                        });
+                    }
+                    return;
+                }
+                // ====== PUSH: MY_BOOKINGS changed ======
+                if (line.StartsWith("PUSH_MY_BOOKINGS_CHANGED|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 2)
+                    {
+                        var userId = p[1];
+
+                        // chỉ reload nếu đúng user hiện tại
+                        if (string.Equals(userId, _currentUser.UserId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            AppendClientLog("[INFO] MY_BOOKINGS changed -> reload once");
+                            _ = Task.Run(async () =>
+                            {
+                                try { await ReloadMyBookingsAsync(); }
+                                catch (Exception ex) { AppendClientLog("[ERROR] ReloadMyBookingsAsync: " + ex.Message); }
+                            });
+                        }
+                    }
+                    return;
+                }
+                /////////////////////////////////////
+                if (line == "PUSH_ROOMS_CHANGED")
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await LoadRoomsFromServerAsync(); }
+                        catch (Exception ex) { AppendClientLog("[ERROR] LoadRoomsFromServerAsync: " + ex.Message); }
+                    }); return;
+                }
+                ////////////////////////////////////////////
+                if (line == "PUSH_SLOT_CONFIG_CHANGED")
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await LoadSlotConfigFromServerAsync(); }
+                        catch (Exception ex) { AppendClientLog("[ERROR] LoadSlotConfigFromServerAsync: " + ex.Message); }
+                    });
+                    return;
+                }
 
                 // ====== 1. HOME_DATA BEGIN ======
                 if (line == "HOME_DATA_BEGIN")
@@ -2973,6 +2910,9 @@ namespace BookingClient
                     _pendingRoomsJson = "";
                     return;
                 }
+
+
+
 
                 // ====== 4. Đang đọc ROOMS block ======
                 if (_isReadingRooms)
@@ -3020,15 +2960,6 @@ namespace BookingClient
                     {
                         _slotConfigTemp.Add((s[1], s[2], s[3]));
                     }
-                    return;
-                }
-
-                // ====== 5. PONG ======
-                if (line == "PONG")
-                {
-                    _pnlHeaderConnectDot.BackColor = Color.LimeGreen;
-                    _lblHeaderConnectText.Text = "OK";
-                    _lblHeaderConnectText.ForeColor = Color.Green;
                     return;
                 }
 
@@ -3169,12 +3100,24 @@ namespace BookingClient
                 if (line.StartsWith("NOW|"))
                 {
                     var payload = line.Substring(4);
-                    if (DateTime.TryParse(payload, out var serverTime))
+
+                    if (DateTime.TryParseExact(
+                        payload,
+                        "yyyy-MM-dd HH:mm:ss",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None,
+                        out var serverTime))
                     {
                         _serverTimeOffset = serverTime - DateTime.Now;
+                        AppendClientLog($"[TIME] Sync NOW: {serverTime:HH:mm:ss}");
+                    }
+                    else
+                    {
+                        AppendClientLog("[WARN] Invalid NOW payload: " + payload);
                     }
                     return;
                 }
+
                 // ====== 14. REQUEST SINGLE RESPONSE ======
                 if (line.StartsWith("INFO|QUEUED|"))
                 {
@@ -3269,6 +3212,65 @@ namespace BookingClient
                     );
                     return;
                 }
+                // ====== SLOT_UPDATE (M5 delta) ======
+                if (line.StartsWith("SLOT_UPDATE|"))
+                {
+                    ApplySlotDeltaUpdate(line);
+                    return;
+                }
+                // ====== ROOM_SLOTS_BEGIN ======
+                if (line == "ROOM_SLOTS_BEGIN")
+                {
+                    _isReadingRoomSlots = true;
+                    _roomSlotsBuffer.Clear();
+                    return;
+                }
+
+                // ====== Đang đọc block ROOM_SLOTS ======
+                if (_isReadingRoomSlots)
+                {
+                    if (line == "ROOM_SLOTS_END")
+                    {
+                        _isReadingRoomSlots = false;
+
+                        // ✅ END REQUEST
+                        _roomSlotsRequestInFlight = false;
+
+                        RenderRoomSlots();
+                        return;
+                    }
+
+                    if (line.StartsWith("SLOT|"))
+                        _roomSlotsBuffer.Add(line);
+
+                    return;
+                }
+
+
+                // ====== MY_BOOKINGS_BEGIN ======
+                if (line == "MY_BOOKINGS_BEGIN")
+                {
+                    _isReadingMyBookings = true;
+                    _myBookingsBuffer.Clear();
+                    return;
+                }
+
+                // ====== Đang đọc block MY_BOOKINGS ======
+                if (_isReadingMyBookings)
+                {
+                    if (line == "MY_BOOKINGS_END")
+                    {
+                        _isReadingMyBookings = false;
+                        RenderMyBookings();   // <<< bạn sẽ thêm ở bước 3
+                        return;
+                    }
+
+                    if (line.StartsWith("BOOKING|"))
+                    {
+                        _myBookingsBuffer.Add(line);
+                    }
+                    return;
+                }
 
 
                 // ====== 19. UNKNOWN ======
@@ -3281,7 +3283,584 @@ namespace BookingClient
         }
 
 
+        private async void BtnRequest_Click(object? sender, EventArgs e)
+        {
+            if (_currentUser == null)
+            {
+                MessageBox.Show("Chưa đăng nhập.");
+                return;
+            }
+            if (_writer == null)
+            {
+                MessageBox.Show("Chưa kết nối server.");
+                return;
+            }
+            if (_gridRooms.CurrentRow == null)
+            {
+                MessageBox.Show("Vui lòng chọn phòng.");
+                return;
+            }
+
+            var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+            if (string.IsNullOrWhiteSpace(roomId))
+            {
+                MessageBox.Show("Phòng không hợp lệ.");
+                return;
+            }
+
+            var purpose = _txtPurpose.Text.Trim();
+            if (string.IsNullOrWhiteSpace(purpose))
+            {
+                MessageBox.Show("Vui lòng nhập lý do mượn phòng.");
+                return;
+            }
+
+            // Lấy list slot được tick
+            var selected = _currentRoomSlots
+                .Where(r => r.Selected)
+                .ToList();
+
+            if (selected.Count == 0)
+            {
+                MessageBox.Show("Vui lòng tick ít nhất 1 slot để request.");
+                return;
+            }
+
+            var dateKey = _dtBookingDate.Value.ToString("yyyy-MM-dd");
+
+            // ❌ KHÔNG còn chặn người khác giữ – để server cho join queue
+            // => bỏ hẳn block "isBusyByOther" cũ
+
+            // 1) Không cho chồng lên booking ĐÃ GRANT của chính mình
+            foreach (var s in selected)
+            {
+                int slotIdx = ParseSlotIndexSafe(s.SlotId);
+                if (slotIdx <= 0) continue;
+
+                bool overlapWithGrantedBooking = _myBookings.Any(b =>
+                {
+                    if (!IsGrantedBookingStatus(b.Status)) return false;
+
+                    // cùng ngày
+                    if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    // range slot của booking
+                    int start = ParseSlotIndexSafe(b.SlotStartId);
+                    int end = ParseSlotIndexSafe(b.SlotEndId);
+                    if (start <= 0 || end < start) return false;
+
+                    return slotIdx >= start && slotIdx <= end;
+                });
+
+                if (overlapWithGrantedBooking)
+                {
+                    MessageBox.Show(
+                        $"Slot {s.SlotId} trùng với một booking đã được GRANT của bạn.\nKhông được request chồng (kể cả single/range).",
+                        "Request",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+                    return;
+                }
+            }
+
+            // 2) Kiểm tra các slot được chọn có liên tục không
+            var ordered = selected
+                .Select(s => new { Row = s, Index = ParseSlotIndexSafe(s.SlotId) })
+                .Where(x => x.Index > 0)
+                .OrderBy(x => x.Index)
+                .ToList();
+
+            if (ordered.Count == 0)
+            {
+                MessageBox.Show("Slot không hợp lệ.");
+                return;
+            }
+
+            bool isContinuous = true;
+            for (int i = 1; i < ordered.Count; i++)
+            {
+                if (ordered[i].Index != ordered[i - 1].Index + 1)
+                {
+                    isContinuous = false;
+                    break;
+                }
+            }
+
+            string slotFrom = ordered.First().Row.SlotId;
+            string slotTo = ordered.Last().Row.SlotId;
+
+            try
+            {
+                if (!isContinuous && ordered.Count > 1)
+                {
+                    MessageBox.Show("Các slot được chọn phải liên tục (S3, S4, S5...).");
+                    return;
+                }
+
+                string cmd;
+                string safePurpose = purpose
+                    .Replace("|", "/")
+                    .Replace("\r", " ")
+                    .Replace("\n", " ");
+
+                if (ordered.Count == 1)
+                {
+                    cmd = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotFrom}|{safePurpose}";
+                }
+                else
+                {
+                    cmd = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{safePurpose}";
+                }
+
+
+                AppendClientLog("[SEND] " + cmd);
+                await _writer.WriteLineAsync(cmd);
+
+                _lblRequestStatus.ForeColor = Color.Blue;
+                _lblRequestStatus.Text = $"Đang gửi REQUEST cho {roomId}: {slotFrom} → {slotTo}";
+
+                // còn không thì chờ push
+                // await ReloadMyBookingsAsync();
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog("[ERROR] BtnRequest_Click: " + ex.Message);
+                MessageBox.Show("Request lỗi: " + ex.Message);
+            }
+        }
+
+        private readonly SemaphoreSlim _subLock = new(1, 1);
+
+        private async Task UpdateRoomSlotsSubscriptionAsync(string roomId, DateTime date)
+        {
+            if (_writer == null) return;
+
+            var dateKey = date.ToString("yyyy-MM-dd");
+
+            await _subLock.WaitAsync();
+            try
+            {
+                // nếu không đổi gì thì thôi
+                if (string.Equals(_subRoomId, roomId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(_subDateKey, dateKey, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                // giữ cái cũ để UNSUB
+                var oldRoom = _subRoomId;
+                var oldDate = _subDateKey;
+
+                // set cái mới TRƯỚC để nhận SLOT_UPDATE không bị lệch
+                _subRoomId = roomId;
+                _subDateKey = dateKey;
+
+                // Unsub cái cũ (nếu có)
+                if (!string.IsNullOrEmpty(oldRoom) && !string.IsNullOrEmpty(oldDate))
+                {
+                    await _writer.WriteLineAsync($"UNSUB_ROOM_SLOTS|{oldRoom}|{oldDate}");
+                    AppendClientLog($"[SEND] UNSUB_ROOM_SLOTS|{oldRoom}|{oldDate}");
+                }
+
+                // Sub cái mới
+                await _writer.WriteLineAsync($"SUB_ROOM_SLOTS|{roomId}|{dateKey}");
+                AppendClientLog($"[SEND] SUB_ROOM_SLOTS|{roomId}|{dateKey}");
+            }
+            finally
+            {
+                _subLock.Release();
+            }
+        }
+
+        private async void BtnReleaseBooking_Click(object? sender, EventArgs e)
+        {
+            if (_currentUser == null)
+            {
+                MessageBox.Show("Chưa đăng nhập.");
+                return;
+            }
+            if (_writer == null)
+            {
+                MessageBox.Show("Chưa kết nối server.");
+                return;
+            }
+            if (_gridMyBookings.CurrentRow == null)
+            {
+                MessageBox.Show("Vui lòng chọn một booking để release.");
+                return;
+            }
+
+            var row = _gridMyBookings.CurrentRow.DataBoundItem as MyBookingRow;
+            if (row == null)
+            {
+                MessageBox.Show("Booking không hợp lệ.");
+                return;
+            }
+
+            // Chỉ cho release booking của chính mình & còn hiệu lực (APPROVED/IN_USE)
+            if (row.Status != "APPROVED" && row.Status != "IN_USE")
+            {
+                var confirmHistory = MessageBox.Show(
+                    "Booking đã ở trạng thái " + row.Status + ". Bạn vẫn muốn gửi RELEASE?",
+                    "Release lịch sử",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (confirmHistory == DialogResult.No)
+                    return;
+            }
+
+            string roomId = row.RoomId;
+            string slotFrom = row.SlotStartId;
+            string slotTo = row.SlotEndId;
+
+            var confirm = MessageBox.Show(
+                $"Xác nhận RELEASE booking:\nPhòng {roomId}\nCa {slotFrom} → {slotTo}\nNgày {row.Date}",
+                "Xác nhận RELEASE",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+
+            if (confirm != DialogResult.Yes)
+                return;
+
+            try
+            {
+                string cmd;
+                if (slotFrom == slotTo)
+                {
+                    cmd = $"RELEASE|{_currentUser.UserId}|{roomId}|{slotFrom}";
+                }
+                else
+                {
+                    cmd = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                }
+
+                AppendClientLog("[SEND] " + cmd);
+                await _writer.WriteLineAsync(cmd);
+
+                _lblRequestStatus.ForeColor = Color.Blue;
+                _lblRequestStatus.Text = $"Đang gửi RELEASE {roomId} {slotFrom}→{slotTo}";
+
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog("[ERROR] BtnReleaseBooking_Click: " + ex.Message);
+                MessageBox.Show("Release lỗi: " + ex.Message);
+            }
+        }
+        private bool IsActiveBookingStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status)) return false;
+            status = status.ToUpperInvariant();
+
+            return status == "APPROVED"
+                || status == "IN_USE"
+                || status == "WAITING"
+                || status == "QUEUED";
+        }
+        private bool IsGrantedBookingStatus(string? status)
+        {
+            if (string.IsNullOrWhiteSpace(status)) return false;
+            status = status.ToUpperInvariant();
+
+            return status == "APPROVED"
+                || status == "IN_USE";
+        }
+        private bool IsSlotGrantedToMe(int slotIdx, string dateKey)
+        {
+            if (_currentUser == null) return false;
+
+            foreach (var b in _myBookings)
+            {
+                if (!IsGrantedBookingStatus(b.Status)) continue;
+
+                if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                int s = ParseSlotIndexSafe(b.SlotStartId);
+                int e = ParseSlotIndexSafe(b.SlotEndId);
+                if (s <= 0 || e < s) continue;
+
+                if (slotIdx >= s && slotIdx <= e)
+                    return true;
+            }
+
+            return false;
+        }
+        private void HighlightSlotsOfMyBookingsInCurrentRoom()
+        {
+            if (_gridRooms.CurrentRow == null) return;
+
+            var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+            if (string.IsNullOrEmpty(roomId)) return;
+
+            var dateKey = _dtBookingDate.Value.ToString("yyyy-MM-dd");
+
+            // Duyệt từng row slot hiện tại và set Selected = true nếu slot nằm trong
+            // bất kỳ booking (active) của user cho phòng + ngày tương ứng
+            foreach (var row in _currentRoomSlots)
+            {
+                int idx = ParseSlotIndexSafe(row.SlotId);
+                if (idx <= 0)
+                {
+                    row.Selected = false;
+                    continue;
+                }
+
+                bool belongsToMyBooking = _myBookings.Any(b =>
+                {
+                    // chỉ consider những booking đang "active" (chưa cancel)
+                    if (!IsActiveBookingStatus(b.Status)) return false;
+
+                    if (!string.Equals(b.RoomId, roomId, StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
+                        return false;
+
+                    int s = ParseSlotIndexSafe(b.SlotStartId);
+                    int e = ParseSlotIndexSafe(b.SlotEndId);
+                    if (s <= 0 || e < s) return false;
+
+                    return idx >= s && idx <= e;
+                });
+
+                row.Selected = belongsToMyBooking;
+            }
+
+            _gridRoomSlots.Refresh();
+        }
+        private void RenderMyBookings()
+        {
+            _myBookings.Clear();
+
+            foreach (var l in _myBookingsBuffer)
+            {
+                // BOOKING|BookingId|Date|RoomId|SlotStartId|SlotEndId|TimeRange|Status|Purpose
+                var parts = l.Split('|');
+                if (parts.Length < 9) continue; // để code cũ vẫn chạy nếu chưa update server
+
+                if (!Guid.TryParse(parts[1], out var bid)) continue;
+
+                var row = new MyBookingRow
+                {
+                    BookingId = bid,
+                    Date = parts[2],
+                    RoomId = parts[3],
+                    SlotStartId = parts[4],
+                    SlotEndId = parts[5],
+                    TimeRange = parts[6],
+                    Status = parts[7],
+                    Purpose = parts[8]
+                };
+
+                if (parts.Length > 9) row.CreatedAt = parts[9];
+                if (parts.Length > 10) row.CheckinDeadline = parts[10];
+                if (parts.Length > 11) row.CheckinTime = parts[11];
+                if (parts.Length > 12) row.UpdatedAt = parts[12];
+
+                _myBookings.Add(row);
+
+            }
+            // ✅ SORT theo CreatedAt tăng dần (cũ -> mới), để CreatedAt mới nhất nằm ở CUỐI
+            {
+                var list = _myBookings.ToList();
+
+                list.Sort((a, b) =>
+                {
+                    // CreatedAt format server gửi: "yyyy-MM-dd HH:mm:ss"
+                    DateTime da, db;
+
+                    var oka = DateTime.TryParseExact(
+                        a.CreatedAt,
+                        "yyyy-MM-dd HH:mm:ss",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None,
+                        out da);
+
+                    var okb = DateTime.TryParseExact(
+                        b.CreatedAt,
+                        "yyyy-MM-dd HH:mm:ss",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None,
+                        out db);
+
+                    // cái nào parse fail cho lên đầu (MinValue)
+                    if (!oka) da = DateTime.MinValue;
+                    if (!okb) db = DateTime.MinValue;
+
+                    return da.CompareTo(db); // tăng dần => mới nhất nằm cuối
+                });
+
+                _myBookings.Clear();
+                foreach (var r in list) _myBookings.Add(r);
+            }
+            // _gridMyBookings.DataSource = null;
+            // _gridMyBookings.DataSource = _myBookings;
+            _bsMyBookings.ResetBindings(false);
+
+            // 🔥 Sau khi load booking xong thì cập nhật lại tick ở grid slot hiện tại
+            // (không async, chỉ refresh bằng dữ liệu sẵn có)
+            HighlightSlotsOfMyBookingsInCurrentRoom();
+        }
+        private void RenderRoomSlots()
+        {
+            if (InvokeRequired) { BeginInvoke(new Action(RenderRoomSlots)); return; }
+
+            // ✅ tránh GET cũ về trễ đè UI mới
+            var currentKey = $"{_subRoomId}|{_subDateKey}";
+            if (!string.IsNullOrEmpty(_lastRoomSlotsKey) &&
+                !string.Equals(_lastRoomSlotsKey, currentKey, StringComparison.OrdinalIgnoreCase))
+            {
+                AppendClientLog($"[SKIP] RenderRoomSlots outdated. last={_lastRoomSlotsKey}, sub={currentKey}");
+                return;
+            }
+
+            var oldSelected = _currentRoomSlots
+                .Where(x => !string.IsNullOrWhiteSpace(x.SlotId) && x.Selected)
+                .Select(x => x.SlotId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            _currentRoomSlots.RaiseListChangedEvents = false;
+            try
+            {
+                _currentRoomSlots.Clear();
+
+                foreach (var l in _roomSlotsBuffer)
+                {
+                    var parts = l.Split('|');
+                    if (parts.Length < 8) continue;
+
+                    var slotId = parts[1];
+                    string status = parts[3];
+                    string bookingStatus = parts[6];
+                    // Nếu status hoặc bookingStatus chứa LOCK thì hiển thị BUSY/LOCKED
+                    string displayStatus = status;
+                    if (status.ToUpper().Contains("LOCK") || bookingStatus.ToUpper().Contains("LOCK"))
+                    {
+                        displayStatus = "BUSY"; // hoặc "LOCKED" nếu muốn rõ hơn
+                    }
+                    else
+                    {
+                        displayStatus = $"{status} ({bookingStatus})";
+                    }
+                    _currentRoomSlots.Add(new RoomSlotRow
+                    {
+                        Selected = oldSelected.Contains(slotId),
+                        SlotId = slotId,
+                        TimeRange = parts[2],
+                        Status = displayStatus,
+                        UserId = parts[4],
+                        HolderName = parts[5],
+                        Purpose = (parts.Length == 8) ? parts[7] : string.Join("|", parts.Skip(7))
+                    });
+                }
+            }
+            finally
+            {
+                _currentRoomSlots.RaiseListChangedEvents = true;
+
+                // ✅ refresh 1 lần (nếu dùng BindingSource)
+                _bsRoomSlots.ResetBindings(false);
+            }
+
+            HighlightSlotsOfMyBookingsInCurrentRoom();
+        }
+
+
+
+        private HashSet<string> CaptureSelectedSlotIdsFromGrid()
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (_gridRoomSlots == null) return set;
+
+            foreach (DataGridViewRow row in _gridRoomSlots.Rows)
+            {
+                var slotId = row.Cells["SlotId"].Value?.ToString();
+                if (string.IsNullOrWhiteSpace(slotId)) continue;
+
+                bool isChecked = false;
+                var v = row.Cells["Selected"].Value;
+                if (v is bool b) isChecked = b;
+
+                if (isChecked) set.Add(slotId);
+            }
+
+            return set;
+        }
+
+
+        private void RestoreSelectedSlotIds(HashSet<string> selected)
+        {
+            if (_currentRoomSlots == null) return;
+
+            foreach (var r in _currentRoomSlots)
+            {
+                if (!string.IsNullOrWhiteSpace(r.SlotId))
+                    r.Selected = selected.Contains(r.SlotId);
+            }
+
+            // nếu bạn dùng BindingList/BindingSource thì nên refresh grid
+            _gridRoomSlots?.Refresh();
+        }
+        private void ApplySlotDeltaUpdate(string line)
+        {
+            if (InvokeRequired) { BeginInvoke(new Action(() => ApplySlotDeltaUpdate(line))); return; }
+
+            var p = line.Split('|');
+            if (p.Length < 9) return;
+
+            var roomId = p[1];
+            var dateKey = p[2];
+            var slotId = p[3];
+            var status = p[4];
+            var userId = p[5];
+            var fullName = p[6];
+            var bookingStatus = p[7];
+            var purpose = (p.Length == 9) ? p[8] : string.Join("|", p.Skip(8));
+
+            if (!string.Equals(roomId, _subRoomId, StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.Equals(dateKey, _subDateKey, StringComparison.OrdinalIgnoreCase)) return;
+
+            int idx = -1;
+            for (int i = 0; i < _currentRoomSlots.Count; i++)
+                if (string.Equals(_currentRoomSlots[i].SlotId, slotId, StringComparison.OrdinalIgnoreCase))
+                { idx = i; break; }
+
+            if (idx < 0) return;
+
+            var row = _currentRoomSlots[idx];
+            row.Status = $"{status} ({bookingStatus})";
+            row.UserId = userId;
+            row.HolderName = fullName;
+            row.Purpose = purpose;
+
+            // ✅ refresh đúng 1 item
+            _bsRoomSlots.ResetItem(idx);
+
+            HighlightSlotsOfMyBookingsInCurrentRoom();
+        }
+
+        private static void EnableTcpKeepAlive(Socket s, uint timeMs = 30_000, uint intervalMs = 10_000)
+        {
+            try
+            {
+                s.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+                byte[] inOptionValues = new byte[12];
+                BitConverter.GetBytes((uint)1).CopyTo(inOptionValues, 0);
+                BitConverter.GetBytes(timeMs).CopyTo(inOptionValues, 4);
+                BitConverter.GetBytes(intervalMs).CopyTo(inOptionValues, 8);
+                s.IOControl(IOControlCode.KeepAliveValues, inOptionValues, null);
+            }
+            catch { }
+        }
+
+
+
     }
+
+
 
 }
 

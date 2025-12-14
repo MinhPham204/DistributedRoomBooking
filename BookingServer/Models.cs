@@ -100,6 +100,7 @@ namespace BookingServer
         public string UserId { get; set; } = "";
         public string FullName { get; set; } = "";
         public string BookingStatus { get; set; } = ""; // APPROVED / IN_USE / COMPLETED / ...
+        public string Purpose { get; set; } = "";       // NEW: lý do mượn phòng
     }
 
     /// Thống kê theo phòng

@@ -73,6 +73,33 @@ public class Form1 : Form
     private Label _lblQueueTitle = null!;
     private ListBox _lstQueue = null!;
 
+    // Queue User detail panel
+    private GroupBox _grpQueueUserDetail = null!;
+    private Label _lblQueueUserUserId = null!;
+    private Label _lblQueueUserUserType = null!;
+    private Label _lblQueueUserFullName = null!;
+    private Label _lblQueueUserStudentId = null!;
+    private Label _lblQueueUserClass = null!;
+    private Label _lblQueueUserDepartment = null!;
+    private Label _lblQueueUserLecturerId = null!;
+    private Label _lblQueueUserFaculty = null!;
+    private Label _lblQueueUserEmail = null!;
+    private Label _lblQueueUserPhone = null!;
+    private Label _lblQueueUserIsActive = null!;
+
+    // Current booking details
+    private Label _lblBookingId = null!;
+    private Label _lblBookingUserId = null!;
+    private Label _lblBookingRoomId = null!;
+    private Label _lblBookingDate = null!;
+    private Label _lblBookingSlotId = null!;
+    private Label _lblBookingSlotStartId = null!;
+    private Label _lblBookingSlotEndId = null!;
+    private Label _lblBookingIsRange = null!;
+    private Label _lblBookingPurpose = null!;
+    private Label _lblBookingCreatedAt = null!;
+    private Label _lblBookingUpdatedAt = null!;
+
     // ===== Tab Room Management =====
     private DataGridView _gridRooms = null!;
     private TextBox _txtRoomId = null!;
@@ -197,7 +224,7 @@ public class Form1 : Form
         _nowTimer.Start();
 
         _noShowTimer = new WinFormsTimer();
-        _noShowTimer.Interval = 60_000; // mỗi 60s quét NO_SHOW
+        _noShowTimer.Interval = 60000; // mỗi 60s quét NO_SHOW
         _noShowTimer.Tick += NoShowTimer_Tick;
         _noShowTimer.Start();
 
@@ -210,6 +237,7 @@ public class Form1 : Form
         // 2) Đảm bảo current date = hôm nay và đã có slots cho hôm nay
         _state.SetCurrentDate(DateTime.Today, logger);
 
+        _state.StateChanged += () => RefreshSlotsSafe();
 
         // 3) Refresh grid
         RefreshSlotsSafe();
@@ -281,10 +309,27 @@ public class Form1 : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 450,     // cho panel trái rộng hơn tí
-            BorderStyle = BorderStyle.Fixed3D
+            SplitterDistance = 450,
+            BorderStyle = BorderStyle.Fixed3D,
+            IsSplitterFixed = false
         };
         this.Controls.Add(_mainSplit);
+
+        // Thiết lập chia đôi 50-50 responsive khi form load
+        this.Load += (s, e) =>
+        {
+            _mainSplit.SplitterDistance = this.ClientSize.Width / 2;
+        };
+
+        // Giữ tỷ lệ 50-50 khi resize form
+        this.Resize += (s, e) =>
+        {
+            int targetDistance = this.ClientSize.Width / 2;
+            if (Math.Abs(_mainSplit.SplitterDistance - targetDistance) > 5)
+            {
+                _mainSplit.SplitterDistance = targetDistance;
+            }
+        };
 
         _mainSplit.Panel1.Padding = new Padding(0, 50, 0, 0);   // hạ tab trái xuống 8px
         _mainSplit.Panel2.Padding = new Padding(0, 50, 0, 0);   // hạ tab phải xuống 8px
@@ -448,153 +493,162 @@ public class Form1 : Form
     }
     private void BuildTabSlotDetail()
     {
-        // Group: Slot info
-        var grpSlotInfo = new GroupBox
+        _tabSlotDetail.SuspendLayout();
+        _tabSlotDetail.Controls.Clear();
+
+        _tabSlotDetail.AutoScroll = true;
+        _tabSlotDetail.Padding = new Padding(10);
+
+        // helper: tạo GroupBox xếp dọc
+        GroupBox MakeGroup(string text, int height)
         {
-            Text = "Slot info",
-            Left = 10,
-            Top = 10,
-            Width = 740,
-            Height = 70
-        };
-        _tabSlotDetail.Controls.Add(grpSlotInfo);
+            return new GroupBox
+            {
+                Text = text,
+                Dock = DockStyle.Top,
+                Height = height,
+                Padding = new Padding(10),
+                Margin = new Padding(0, 0, 0, 10)
+            };
+        }
+
+        // =========================================================
+        // 1) SLOT INFO
+        // =========================================================
+        var grpSlotInfo = MakeGroup("Slot info", 70);
 
         _lblSelectedSlot = new Label
         {
-            Left = 10,
-            Top = 25,
-            Width = 700,
-            Text = "Slot: (chưa chọn)"
+            Dock = DockStyle.Fill,
+            Text = "Slot: (chưa chọn)",
+            AutoEllipsis = true
         };
         grpSlotInfo.Controls.Add(_lblSelectedSlot);
 
-        // Group: Booking hiện tại
-        var grpBooking = new GroupBox
-        {
-            Text = "Current booking",
-            Left = 10,
-            Top = 90,
-            Width = 740,
-            Height = 110
-        };
-        _tabSlotDetail.Controls.Add(grpBooking);
-
+        // =========================================================
+        // 2) CURRENT BOOKING
+        // =========================================================
+        var grpBooking = MakeGroup("Current booking", 250);
         _lblBookingUser = new Label
         {
-            Left = 10,
-            Top = 25,
-            Width = 700,
-            Text = "User: -"
+            Dock = DockStyle.Top,
+            Height = 18,
+            Text = "User: -",
+            AutoEllipsis = true
         };
         grpBooking.Controls.Add(_lblBookingUser);
+        _lblBookingUser.BringToFront(); // đảm bảo nằm trên bookingTable
 
-        _lblBookingStatus = new Label
+
+
+        // dùng TableLayoutPanel để khỏi canh Top thủ công
+        var bookingTable = new TableLayoutPanel
         {
-            Left = 10,
-            Top = 45,
-            Width = 700,
-            Text = "Status: -"
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 0,
+            AutoSize = false
         };
-        grpBooking.Controls.Add(_lblBookingStatus);
+        bookingTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+        bookingTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
-        // TODO: sau này thêm label Purpose, CreatedAt, CheckinDeadline, CheckinTime...
+        Label MakeBookingLabel(string text)
+            => new Label { Dock = DockStyle.Fill, Height = 18, Text = text, AutoEllipsis = true };
 
-        // Group: Admin actions (Check-in / Complete / Force)
-        _grpCheckin = new GroupBox
+        // mỗi AddRow sẽ tự tăng RowCount
+        void AddRow(Control left, Control right)
         {
-            Text = "Admin actions",
-            Left = 10,
-            Top = 210,
-            Width = 740,
-            Height = 170   // tăng chiều cao một chút để đủ chỗ range
-        };
-        _tabSlotDetail.Controls.Add(_grpCheckin);
+            bookingTable.RowCount += 1;
+            bookingTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            bookingTable.Controls.Add(left, 0, bookingTable.RowCount - 1);
+            bookingTable.Controls.Add(right, 1, bookingTable.RowCount - 1);
+        }
 
-        _btnCheckIn = new Button
-        {
-            Left = 10,
-            Top = 25,
-            Width = 150,
-            Text = "CHECK-IN",
-            Enabled = false
-        };
+        // các label booking
+        _lblBookingId = MakeBookingLabel("BookingId: -");
+        _lblBookingUserId = MakeBookingLabel("UserId: -");
+        _lblBookingRoomId = MakeBookingLabel("RoomId: -");
+        _lblBookingDate = MakeBookingLabel("Date: -");
+        _lblBookingSlotStartId = MakeBookingLabel("SlotStartId: -");
+        _lblBookingSlotEndId = MakeBookingLabel("SlotEndId: -");
+        _lblBookingIsRange = MakeBookingLabel("IsRangeBooking: -");
+        _lblBookingStatus = MakeBookingLabel("Status: -");
+        _lblBookingPurpose = MakeBookingLabel("Purpose: -");
+        _lblBookingCreatedAt = MakeBookingLabel("CreatedAt: -");
+        _lblBookingUpdatedAt = MakeBookingLabel("UpdatedAt: -");
+
+        // xếp bảng
+        AddRow(_lblBookingId, new Label());                 // right trống
+        AddRow(_lblBookingUserId, new Label());
+        AddRow(_lblBookingRoomId, new Label());
+        AddRow(_lblBookingDate, new Label());
+        AddRow(_lblBookingSlotStartId, _lblBookingSlotEndId);
+        AddRow(_lblBookingIsRange, _lblBookingStatus);
+
+        // Purpose chiếm 2 cột
+        bookingTable.RowCount += 1;
+        bookingTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        bookingTable.Controls.Add(_lblBookingPurpose, 0, bookingTable.RowCount - 1);
+        bookingTable.SetColumnSpan(_lblBookingPurpose, 2);
+
+        bookingTable.RowCount += 1;
+        bookingTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        bookingTable.Controls.Add(_lblBookingCreatedAt, 0, bookingTable.RowCount - 1);
+        bookingTable.SetColumnSpan(_lblBookingCreatedAt, 2);
+
+        bookingTable.RowCount += 1;
+        bookingTable.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+        bookingTable.Controls.Add(_lblBookingUpdatedAt, 0, bookingTable.RowCount - 1);
+        bookingTable.SetColumnSpan(_lblBookingUpdatedAt, 2);
+
+        grpBooking.Controls.Add(bookingTable);
+        bookingTable.Dock = DockStyle.Fill;
+
+        // =========================================================
+        // 3) ADMIN ACTIONS
+        // =========================================================
+        _grpCheckin = MakeGroup("Admin actions", 120);
+
+        _btnCheckIn = new Button { Left = 10, Top = 25, Width = 150, Text = "CHECK-IN", Enabled = false };
         _btnCheckIn.Click += BtnCheckIn_Click;
         _grpCheckin.Controls.Add(_btnCheckIn);
 
-        _btnComplete = new Button
-        {
-            Left = 170,
-            Top = 25,
-            Width = 150,
-            Text = "Complete & Release",
-            Enabled = false
-        };
+        _btnComplete = new Button { Left = 170, Top = 25, Width = 150, Text = "Complete & Release", Enabled = false };
         _btnComplete.Click += BtnComplete_Click;
         _grpCheckin.Controls.Add(_btnComplete);
 
-        var lblForceUser = new Label
-        {
-            Left = 10,
-            Top = 65,
-            Width = 80,
-            Text = "Force user:"
-        };
+        var lblForceUser = new Label { Left = 10, Top = 62, Width = 80, Text = "Force user:" };
         _grpCheckin.Controls.Add(lblForceUser);
 
-        _txtForceUserId = new TextBox
-        {
-            Left = 90,
-            Top = 62,
-            Width = 140
-        };
+        _txtForceUserId = new TextBox { Left = 90, Top = 58, Width = 140 };
         _grpCheckin.Controls.Add(_txtForceUserId);
 
-        _btnForceGrant = new Button
-        {
-            Left = 240,
-            Top = 60,
-            Width = 120,
-            Text = "Force GRANT (single)"
-        };
+        _btnForceGrant = new Button { Left = 240, Top = 56, Width = 80, Text = "GRANT" };
         _btnForceGrant.Click += BtnForceGrant_Click;
         _grpCheckin.Controls.Add(_btnForceGrant);
 
-        _btnForceRelease = new Button
-        {
-            Left = 370,
-            Top = 60,
-            Width = 120,
-            Text = "Force RELEASE (single)"
-        };
+        _btnForceRelease = new Button { Left = 330, Top = 56, Width = 80, Text = "RELEASE" };
         _btnForceRelease.Click += BtnForceRelease_Click;
         _grpCheckin.Controls.Add(_btnForceRelease);
 
-        // ====== RANGE FORCE (mới) ======
-        var lblRange = new Label
-        {
-            Left = 10,
-            Top = 100,
-            Width = 80,
-            Text = "Range:"
-        };
+        var lblRange = new Label { Left = 430, Top = 62, Width = 55, Text = "Range:" };
         _grpCheckin.Controls.Add(lblRange);
 
         _cbForceSlotStart = new ComboBox
         {
-            Left = 90,
-            Top = 97,
+            Left = 485,
+            Top = 58,
             Width = 60,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _cbForceSlotEnd = new ComboBox
         {
-            Left = 160,
-            Top = 97,
+            Left = 550,
+            Top = 58,
             Width = 60,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
 
-        // fill S1..S14
         for (int i = 1; i <= 14; i++)
         {
             var sid = $"S{i}";
@@ -609,104 +663,130 @@ public class Form1 : Form
 
         _btnForceGrantRange = new Button
         {
-            Left = 240,
-            Top = 95,
-            Width = 120,
-            Text = "Force GRANT RANGE"
+            Left = 620,
+            Top = 56,
+            Width = 100,
+            Text = "GRANT RANGE"
         };
         _btnForceGrantRange.Click += BtnForceGrantRange_Click;
         _grpCheckin.Controls.Add(_btnForceGrantRange);
 
-        _btnForceReleaseRange = new Button
-        {
-            Left = 370,
-            Top = 95,
-            Width = 140,
-            Text = "Force RELEASE RANGE"
-        };
-        _btnForceReleaseRange.Click += BtnForceReleaseRange_Click;
-        _grpCheckin.Controls.Add(_btnForceReleaseRange);
+        // =========================================================
+        // 4) EVENT LOCK
+        // =========================================================
+        var grpEvent = MakeGroup("Event lock", 90);
 
-
-        // Group: Event lock
-        var grpEvent = new GroupBox
-        {
-            Text = "Event lock",
-            Left = 10,
-            Top = 350,
-            Width = 740,
-            Height = 80
-        };
-        _tabSlotDetail.Controls.Add(grpEvent);
-
-        var lblEventNote = new Label
-        {
-            Left = 10,
-            Top = 35,
-            Width = 80,
-            Text = "Event note:"
-        };
+        var lblEventNote = new Label { Left = 10, Top = 35, Width = 80, Text = "Event note:" };
         grpEvent.Controls.Add(lblEventNote);
 
-        _txtEventNote = new TextBox
-        {
-            Left = 90,
-            Top = 35,
-            Width = 260
-        };
+        _txtEventNote = new TextBox { Left = 90, Top = 32, Width = 260 };
         grpEvent.Controls.Add(_txtEventNote);
 
-        _btnLockEvent = new Button
-        {
-            Left = 360,
-            Top = 35,
-            Width = 120,
-            Text = "Lock for Event"
-        };
+        _btnLockEvent = new Button { Left = 360, Top = 30, Width = 120, Text = "Lock for Event" };
         _btnLockEvent.Click += BtnLockEvent_Click;
         grpEvent.Controls.Add(_btnLockEvent);
 
-        _btnUnlockEvent = new Button
-        {
-            Left = 490,
-            Top = 35,
-            Width = 120,
-            Text = "Unlock Event"
-        };
+        _btnUnlockEvent = new Button { Left = 490, Top = 30, Width = 120, Text = "Unlock Event" };
         _btnUnlockEvent.Click += BtnUnlockEvent_Click;
         grpEvent.Controls.Add(_btnUnlockEvent);
 
-        // Group: Queue view
-        var grpQueue = new GroupBox
-        {
-            Text = "Queue",
-            Left = 10,
-            Top = 440,
-            Width = 740,
-            Height = 160
-        };
-        _tabSlotDetail.Controls.Add(grpQueue);
+        // =========================================================
+        // 5) QUEUE + USER DETAIL (Queue list nhỏ)
+        // =========================================================
+        var grpQueueWrap = MakeGroup("Queue & detail", 260);
 
+        var queueContainer = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,     // trái: queue, phải: detail
+            SplitterWidth = 6,
+            FixedPanel = FixedPanel.Panel1,
+            SplitterDistance = 280                 // queue panel nhỏ vừa đủ
+        };
+        grpQueueWrap.Controls.Add(queueContainer);
+
+        // Panel trái: Queue
+        var grpQueue = new GroupBox { Text = "Queue", Dock = DockStyle.Fill, Padding = new Padding(10) };
+        queueContainer.Panel1.Controls.Add(grpQueue);
+
+        // 1️⃣ ADD LISTBOX TRƯỚC (Fill)
+        _lstQueue = new ListBox
+        {
+            Dock = DockStyle.Fill
+        };
+        _lstQueue.SelectedIndexChanged += LstQueue_SelectedIndexChanged;
+        grpQueue.Controls.Add(_lstQueue);
+
+        // 2️⃣ ADD SPACER (Top)
+        var spacer = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 35
+        };
+        grpQueue.Controls.Add(spacer);
+
+        // 3️⃣ ADD LABEL (Top)
         _lblQueueTitle = new Label
         {
-            Left = 10,
-            Top = 20,
-            Width = 700,
-            Text = "Queue for: (select a room/slot)"
+            Dock = DockStyle.Top,
+            Height = 18,
+            Text = "Queue for: (select a room/slot)",
+            AutoEllipsis = true
         };
         grpQueue.Controls.Add(_lblQueueTitle);
 
-        _lstQueue = new ListBox
-        {
-            Left = 10,
-            Top = 40,
-            Width = 700,
-            Height = 100
-        };
-        grpQueue.Controls.Add(_lstQueue);
-        _tabSlotDetail.AutoScroll = true;
 
+        // Panel phải: User detail
+        _grpQueueUserDetail = new GroupBox { Text = "Queue user detail", Dock = DockStyle.Fill, Padding = new Padding(10) };
+        queueContainer.Panel2.Controls.Add(_grpQueueUserDetail);
+
+        var qTable = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            AutoScroll = true
+        };
+        qTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _grpQueueUserDetail.Controls.Add(qTable);
+
+        Label MakeQ(string text) => new Label { Dock = DockStyle.Top, Height = 18, Text = text, AutoEllipsis = true };
+
+        _lblQueueUserUserId = MakeQ("UserId: -");
+        _lblQueueUserUserType = MakeQ("UserType: -");
+        _lblQueueUserFullName = MakeQ("FullName: -");
+        _lblQueueUserStudentId = MakeQ("StudentId: -");
+        _lblQueueUserClass = MakeQ("Class: -");
+        _lblQueueUserDepartment = MakeQ("Department: -");
+        _lblQueueUserLecturerId = MakeQ("LecturerId: -");
+        _lblQueueUserFaculty = MakeQ("Faculty: -");
+        _lblQueueUserEmail = MakeQ("Email: -");
+        _lblQueueUserPhone = MakeQ("Phone: -");
+        _lblQueueUserIsActive = MakeQ("IsActive: -");
+
+        qTable.Controls.Add(_lblQueueUserUserId);
+        qTable.Controls.Add(_lblQueueUserUserType);
+        qTable.Controls.Add(_lblQueueUserFullName);
+        qTable.Controls.Add(_lblQueueUserStudentId);
+        qTable.Controls.Add(_lblQueueUserClass);
+        qTable.Controls.Add(_lblQueueUserDepartment);
+        qTable.Controls.Add(_lblQueueUserLecturerId);
+        qTable.Controls.Add(_lblQueueUserFaculty);
+        qTable.Controls.Add(_lblQueueUserEmail);
+        qTable.Controls.Add(_lblQueueUserPhone);
+        qTable.Controls.Add(_lblQueueUserIsActive);
+
+        // =========================================================
+        // ADD TO TAB (thứ tự: add từ DƯỚI lên trên vì Dock=Top)
+        // =========================================================
+        _tabSlotDetail.Controls.Add(grpQueueWrap);
+        _tabSlotDetail.Controls.Add(grpEvent);
+        _tabSlotDetail.Controls.Add(_grpCheckin);
+        _tabSlotDetail.Controls.Add(grpBooking);
+        _tabSlotDetail.Controls.Add(grpSlotInfo);
+
+        _tabSlotDetail.ResumeLayout(true);
     }
+
     private void BuildTabRoomManagement()
     {
         _tabRoomMgmt.Controls.Clear();
@@ -1089,9 +1169,6 @@ public class Form1 : Form
         }
     }
 
-
-
-
     // Thêm ở đầu file Form1.cs (field)
     private void BuildTabUserManagement()
     {
@@ -1326,322 +1403,6 @@ public class Form1 : Form
 
     }
 
-    // private void BuildTabBookingDetail()
-    // {
-    //     // Filter panel
-    //     var pnlFilter = new Panel
-    //     {
-    //         Dock = DockStyle.Top,
-    //         Height = 60
-    //     };
-    //     _tabBookingDetail.Controls.Add(pnlFilter);
-
-    //     var lblFrom = new Label { Left = 10, Top = 10, Width = 60, Text = "Từ ngày:" };
-    //     _dtBookingFrom = new DateTimePicker
-    //     {
-    //         Left = 70,
-    //         Top = 7,
-    //         Width = 110,
-    //         Format = DateTimePickerFormat.Custom,
-    //         CustomFormat = "yyyy-MM-dd"
-    //     };
-
-    //     var lblTo = new Label { Left = 190, Top = 10, Width = 60, Text = "Đến:" };
-    //     _dtBookingTo = new DateTimePicker
-    //     {
-    //         Left = 240,
-    //         Top = 7,
-    //         Width = 110,
-    //         Format = DateTimePickerFormat.Custom,
-    //         CustomFormat = "yyyy-MM-dd"
-    //     };
-
-    //     var lblRoom = new Label { Left = 360, Top = 10, Width = 60, Text = "Phòng:" };
-    //     _cbBookingRoom = new ComboBox
-    //     {
-    //         Left = 420,
-    //         Top = 7,
-    //         Width = 100,
-    //         DropDownStyle = ComboBoxStyle.DropDownList
-    //     };
-
-    //     var lblUserId = new Label { Left = 10, Top = 35, Width = 60, Text = "User:" };
-    //     _txtBookingUserIdFilter = new TextBox { Left = 70, Top = 32, Width = 110 };
-
-    //     var lblUserType = new Label { Left = 190, Top = 35, Width = 80, Text = "UserType:" };
-    //     _cbBookingUserType = new ComboBox
-    //     {
-    //         Left = 260,
-    //         Top = 32,
-    //         Width = 90,
-    //         DropDownStyle = ComboBoxStyle.DropDownList
-    //     };
-    //     _cbBookingUserType.Items.AddRange(new object[] { "ALL", "Student", "Lecturer", "Staff" });
-    //     _cbBookingUserType.SelectedIndex = 0;
-
-    //     var lblStatus = new Label { Left = 360, Top = 35, Width = 60, Text = "Status:" };
-    //     _cbBookingStatus = new ComboBox
-    //     {
-    //         Left = 420,
-    //         Top = 32,
-    //         Width = 100,
-    //         DropDownStyle = ComboBoxStyle.DropDownList
-    //     };
-    //     _cbBookingStatus.Items.AddRange(new object[]
-    //     {
-    //     "ALL","APPROVED","IN_USE","COMPLETED","CANCELLED","NO_SHOW"
-    //     });
-    //     _cbBookingStatus.SelectedIndex = 0;
-
-    //     _btnBookingSearch = new Button
-    //     {
-    //         Left = 540,
-    //         Top = 18,
-    //         Width = 80,
-    //         Text = "Search"
-    //     };
-    //     // TODO: gắn event: lấy list BookingView theo filter
-    //     pnlFilter.Controls.AddRange(new Control[]
-    //     {
-    //     lblFrom, _dtBookingFrom,
-    //     lblTo, _dtBookingTo,
-    //     lblRoom, _cbBookingRoom,
-    //     lblUserId, _txtBookingUserIdFilter,
-    //     lblUserType, _cbBookingUserType,
-    //     lblStatus, _cbBookingStatus,
-    //     _btnBookingSearch
-    //     });
-
-    //     // Grid booking
-    //     _gridBookings = new DataGridView
-    //     {
-    //         Dock = DockStyle.Fill,
-    //         ReadOnly = true,
-    //         AllowUserToAddRows = false,
-    //         AllowUserToDeleteRows = false,
-    //         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-    //         SelectionMode = DataGridViewSelectionMode.FullRowSelect
-    //     };
-    //     _tabBookingDetail.Controls.Add(_gridBookings);
-
-    //     // Bottom: Export
-    //     var pnlBottom = new Panel
-    //     {
-    //         Dock = DockStyle.Bottom,
-    //         Height = 40
-    //     };
-    //     _tabBookingDetail.Controls.Add(pnlBottom);
-
-    //     _btnBookingExportExcel = new Button
-    //     {
-    //         Left = 10,
-    //         Top = 8,
-    //         Width = 120,
-    //         Text = "Export Excel"
-    //     };
-    //     _btnBookingExportPdf = new Button
-    //     {
-    //         Left = 140,
-    //         Top = 8,
-    //         Width = 120,
-    //         Text = "Export PDF"
-    //     };
-    //     // TODO: gắn event export file
-    //     pnlBottom.Controls.AddRange(new Control[]
-    //     {
-    //     _btnBookingExportExcel, _btnBookingExportPdf
-    //     });
-    // }
-
-    //     private void BuildTabBookingDetail()
-    // {
-    //     _tabRightBookings.Controls.Clear();
-    //     _tabRightBookings.AutoScroll = true;
-
-    //     var main = new TableLayoutPanel
-    //     {
-    //         Dock = DockStyle.Fill,
-    //         ColumnCount = 1,
-    //         RowCount = 3
-    //     };
-    //     main.RowStyles.Add(new RowStyle(SizeType.AutoSize));          // filter
-    //     main.RowStyles.Add(new RowStyle(SizeType.Percent, 100));      // grid
-    //     main.RowStyles.Add(new RowStyle(SizeType.AutoSize));          // bottom buttons
-
-    //     _tabRightBookings.Controls.Add(main, 0, 0);
-
-    //     // ===================== HÀNG FILTER TRÊN =====================
-    //     var filterPanel = new FlowLayoutPanel
-    //     {
-    //         Dock = DockStyle.Fill,
-    //         AutoSize = true,
-    //         WrapContents = true
-    //     };
-
-    //     main.Controls.Add(filterPanel, 0, 0);
-
-    //     // From date
-    //     filterPanel.Controls.Add(new Label { Text = "Từ ngày:", AutoSize = true, Margin = new Padding(5, 8, 3, 3) });
-    //     _dtBookingFrom = new DateTimePicker
-    //     {
-    //         Width = 120,
-    //         Value = DateTime.Today.AddDays(-7)
-    //     };
-    //     filterPanel.Controls.Add(_dtBookingFrom);
-
-    //     // To date
-    //     filterPanel.Controls.Add(new Label { Text = "Đến ngày:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
-    //     _dtBookingTo = new DateTimePicker
-    //     {
-    //         Width = 120,
-    //         Value = DateTime.Today
-    //     };
-    //     filterPanel.Controls.Add(_dtBookingTo);
-
-    //     // Room
-    //     filterPanel.Controls.Add(new Label { Text = "Room:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
-    //     _cbBookingRoom = new ComboBox
-    //     {
-    //         DropDownStyle = ComboBoxStyle.DropDownList,
-    //         Width = 100
-    //     };
-    //     _cbBookingRoom.Items.Add("ALL");
-    //     foreach (var roomId in _state.RoomsInfo.Keys.OrderBy(r => r))
-    //         _cbBookingRoom.Items.Add(roomId);
-    //     _cbBookingRoom.SelectedIndex = 0;
-    //     filterPanel.Controls.Add(_cbBookingRoom);
-
-    //     // UserId
-    //     filterPanel.Controls.Add(new Label { Text = "UserId:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
-    //     _txtBookingUserId = new TextBox
-    //     {
-    //         Width = 100
-    //     };
-    //     filterPanel.Controls.Add(_txtBookingUserId);
-
-    //     // UserType
-    //     filterPanel.Controls.Add(new Label { Text = "UserType:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
-    //     _cbBookingUserType = new ComboBox
-    //     {
-    //         DropDownStyle = ComboBoxStyle.DropDownList,
-    //         Width = 110
-    //     };
-    //     _cbBookingUserType.Items.AddRange(new object[]
-    //     {
-    //         "ALL", "Student", "Lecturer", "Staff"
-    //     });
-    //     _cbBookingUserType.SelectedIndex = 0;
-    //     filterPanel.Controls.Add(_cbBookingUserType);
-
-    //     // Status
-    //     filterPanel.Controls.Add(new Label { Text = "Status:", AutoSize = true, Margin = new Padding(10, 8, 3, 3) });
-    //     _cbBookingStatus = new ComboBox
-    //     {
-    //         DropDownStyle = ComboBoxStyle.DropDownList,
-    //         Width = 120
-    //     };
-    //     _cbBookingStatus.Items.AddRange(new object[]
-    //     {
-    //         "ALL",
-    //         "APPROVED",
-    //         "IN_USE",
-    //         "COMPLETED",
-    //         "CANCELLED",
-    //         "NO_SHOW"
-    //     });
-    //     _cbBookingStatus.SelectedIndex = 0;
-    //     filterPanel.Controls.Add(_cbBookingStatus);
-
-    //     // Button search
-    //     _btnBookingSearch = new Button
-    //     {
-    //         Text = "Lọc",
-    //         AutoSize = true,
-    //         Margin = new Padding(15, 4, 3, 3)
-    //     };
-    //     _btnBookingSearch.Click += (s, e) => ReloadBookingGrid();
-    //     filterPanel.Controls.Add(_btnBookingSearch);
-
-    //     // ===================== GRID CHÍNH =====================
-    //     _gridBookings = new DataGridView
-    //     {
-    //         Dock = DockStyle.Fill,
-    //         ReadOnly = true,
-    //         AllowUserToAddRows = false,
-    //         AllowUserToDeleteRows = false,
-    //         SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-    //         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells
-    //     };
-    //     _gridBookings.AutoGenerateColumns = false;
-
-    //     // Tạo cột
-    //     void AddCol(string name, string header, int fillWeight = 100)
-    //     {
-    //         _gridBookings.Columns.Add(new DataGridViewTextBoxColumn
-    //         {
-    //             DataPropertyName = name,
-    //             HeaderText = header,
-    //             Name = name,
-    //             ReadOnly = true
-    //         });
-    //     }
-
-    //     AddCol(nameof(BookingView.BookingId), "BookingId");
-    //     AddCol(nameof(BookingView.UserId), "UserId");
-    //     AddCol(nameof(BookingView.FullName), "FullName");
-    //     AddCol(nameof(BookingView.UserType), "UserType");
-    //     AddCol(nameof(BookingView.Email), "Email");
-    //     AddCol(nameof(BookingView.Phone), "Phone");
-    //     AddCol(nameof(BookingView.RoomId), "RoomId");
-    //     AddCol(nameof(BookingView.Date), "Date");
-    //     AddCol(nameof(BookingView.SlotStartId), "SlotStartId");
-    //     AddCol(nameof(BookingView.SlotEndId), "SlotEndId");
-    //     AddCol(nameof(BookingView.TimeRange), "TimeRange");
-    //     AddCol(nameof(BookingView.IsRange), "IsRange");
-    //     AddCol(nameof(BookingView.Purpose), "Purpose");
-    //     AddCol(nameof(BookingView.Status), "Status");
-    //     AddCol(nameof(BookingView.CheckinDeadline), "CheckinDeadline");
-    //     AddCol(nameof(BookingView.CheckinTime), "CheckinTime");
-    //     AddCol(nameof(BookingView.CreatedAt), "CreatedAt");
-    //     AddCol(nameof(BookingView.UpdatedAt), "UpdatedAt");
-
-    //     main.Controls.Add(_gridBookings, 0, 1);
-
-    //     // Double click -> show detail
-    //     _gridBookings.CellDoubleClick += GridBookings_CellDoubleClick;
-
-    //     // ===================== HÀNG NÚT DƯỚI =====================
-    //     var bottomPanel = new FlowLayoutPanel
-    //     {
-    //         Dock = DockStyle.Right,
-    //         AutoSize = true,
-    //         FlowDirection = FlowDirection.RightToLeft
-    //     };
-
-    //     _btnBookingExportPdf = new Button
-    //     {
-    //         Text = "Xuất PDF",
-    //         AutoSize = true,
-    //         Margin = new Padding(5)
-    //     };
-    //     _btnBookingExportPdf.Click += BtnBookingExportPdf_Click;
-
-    //     _btnBookingExportExcel = new Button
-    //     {
-    //         Text = "Xuất Excel",
-    //         AutoSize = true,
-    //         Margin = new Padding(5)
-    //     };
-    //     _btnBookingExportExcel.Click += BtnBookingExportExcel_Click;
-
-    //     bottomPanel.Controls.Add(_btnBookingExportPdf);
-    //     bottomPanel.Controls.Add(_btnBookingExportExcel);
-
-    //     main.Controls.Add(bottomPanel, 0, 2);
-
-    //     // Lần đầu load
-    //     ReloadBookingGrid();
-    // }
     private void BuildTabBookingDetail()
     {
         _tabBookingDetail.Controls.Clear();
@@ -2597,12 +2358,14 @@ public class Form1 : Form
         {
             var logger = new UiLogger(this);
             _state.SetDemoNow(dtDemo.Value, logger);
+            _state.BroadcastNow();
         };
 
         btnUseSystem.Click += (_, __) =>
         {
             var logger = new UiLogger(this);
             _state.ResetDemoNow(logger);
+            _state.BroadcastNow();
         };
 
         // ===== Load dữ liệu từ ServerState vào UI =====
@@ -2790,8 +2553,16 @@ public class Form1 : Form
         using (var reader = new System.IO.StreamReader(stream, Encoding.UTF8))
         {
             string? line;
-            string? clientId = null;
+
+            // Mỗi connection sinh 1 clientId (GUID)
+            string clientId = Guid.NewGuid().ToString("N");
+            string? currentUserId = null;
             string? currentUserType = null;
+
+            Log($"[SERVER] New client connected: {clientId}");
+
+            // ✅ M1-A: Register session online ngay khi accept TCP
+            _state.RegisterClient(clientId, stream);
 
             try
             {
@@ -2826,18 +2597,10 @@ public class Form1 : Form
                                     string reasonCode;
                                     switch (result.Error)
                                     {
-                                        case "User not found":
-                                            reasonCode = "USER_NOT_FOUND";
-                                            break;
-                                        case "User inactive":
-                                            reasonCode = "USER_INACTIVE";
-                                            break;
-                                        case "Invalid password":
-                                            reasonCode = "INVALID_PASSWORD";
-                                            break;
-                                        default:
-                                            reasonCode = "ERROR";
-                                            break;
+                                        case "User not found": reasonCode = "USER_NOT_FOUND"; break;
+                                        case "User inactive": reasonCode = "USER_INACTIVE"; break;
+                                        case "Invalid password": reasonCode = "INVALID_PASSWORD"; break;
+                                        default: reasonCode = "ERROR"; break;
                                     }
 
                                     await SendAsync(stream, $"LOGIN_FAIL|{reasonCode}|{result.Error}\n");
@@ -2851,9 +2614,15 @@ public class Form1 : Form
                                     break;
                                 }
 
-                                // Lưu lại clientId và loại user cho connection này
-                                clientId = user.UserId;
+                                // Ghi nhận user cho connection này
+                                currentUserId = user.UserId;
                                 currentUserType = user.UserType;
+
+                                // ✅ M1-B: Bind user vào session online
+                                _state.BindUser(clientId, currentUserId);
+
+                                // (tuỳ chọn) Nếu hệ thống cũ còn dùng mapping này thì giữ lại
+                                _state.MapClientToUser(clientId, currentUserId);
 
                                 // LOGIN_OK|UserId|UserType|FullName|Email|Phone|StudentId|Class|Department|LecturerId|Faculty
                                 var response =
@@ -2865,6 +2634,7 @@ public class Form1 : Form
                                 await SendAsync(stream, response);
                                 break;
                             }
+
 
                         case "FORGOT_PASSWORD":
                             {
@@ -2907,34 +2677,37 @@ public class Form1 : Form
                                 break;
                             }
 
-
                         case "REQUEST":
                             {
-                                if (parts.Length != 4)
+                                if (parts.Length < 5)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid REQUEST format\n");
                                     break;
                                 }
 
                                 var userIdInMsg = parts[1];
+                                var roomId = parts[2];
+                                var slotId = parts[3];
+                                var purpose = parts[4];
 
-                                // Cho phép đặt clientId bằng userIdInMsg nếu connection này chưa có user
-                                if (clientId == null)
+                                // Bắt buộc phải LOGIN trước
+                                if (currentUserId == null)
                                 {
-                                    clientId = userIdInMsg;
+                                    await SendAsync(stream, "INFO|ERROR|NOT_LOGGED_IN\n");
+                                    break;
                                 }
-                                else if (!string.Equals(clientId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
+
+                                // Không cho giả mạo userId khác
+                                if (!string.Equals(currentUserId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
                                 {
                                     await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
                                     break;
                                 }
 
-                                _state.HandleRequest(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                                // RefreshSlotsSafe();
+                                // Truyền clientId (GUID) xuống ServerState
+                                _state.HandleRequest(clientId, roomId, slotId, purpose, stream, new UiLogger(this));
                                 break;
                             }
-
-
 
                         case "RELEASE":
                             {
@@ -2946,26 +2719,26 @@ public class Form1 : Form
 
                                 var userIdInMsg = parts[1];
 
-                                if (clientId == null)
+                                if (currentUserId == null)
                                 {
-                                    clientId = userIdInMsg;
+                                    await SendAsync(stream, "INFO|ERROR|NOT_LOGGED_IN\n");
+                                    break;
                                 }
-                                else if (!string.Equals(clientId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
+
+                                if (!string.Equals(currentUserId, userIdInMsg, StringComparison.OrdinalIgnoreCase))
                                 {
                                     await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
                                     break;
                                 }
 
                                 _state.HandleRelease(clientId, parts[2], parts[3], stream, new UiLogger(this));
-                                // RefreshSlotsSafe();
                                 break;
                             }
-
 
                         case "REQUEST_RANGE":
                             {
                                 // REQUEST_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                                if (parts.Length < 5)
+                                if (parts.Length < 6)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid REQUEST_RANGE\n");
                                     break;
@@ -2975,20 +2748,22 @@ public class Form1 : Form
                                 var roomId = parts[2];
                                 var slotStart = parts[3];
                                 var slotEnd = parts[4];
+                                var purpose = parts[5];
 
-                                // Cho phép gán clientId = userIdMsg cho connection đầu tiên
-                                if (clientId == null)
+
+                                if (currentUserId == null)
                                 {
-                                    clientId = userIdMsg;
+                                    await SendAsync(stream, "INFO|ERROR|NOT_LOGGED_IN\n");
+                                    break;
                                 }
-                                else if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
+
+                                if (!string.Equals(userIdMsg, currentUserId, StringComparison.OrdinalIgnoreCase))
                                 {
                                     await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
                                     break;
                                 }
 
-                                _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, stream, new UiLogger(this));
-                                // RefreshSlotsSafe();
+                                _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, purpose, stream, new UiLogger(this));
                                 break;
                             }
 
@@ -3006,11 +2781,13 @@ public class Form1 : Form
                                 var slotStart = parts[3];
                                 var slotEnd = parts[4];
 
-                                if (clientId == null)
+                                if (currentUserId == null)
                                 {
-                                    clientId = userIdMsg;
+                                    await SendAsync(stream, "INFO|ERROR|NOT_LOGGED_IN\n");
+                                    break;
                                 }
-                                else if (!string.Equals(userIdMsg, clientId, StringComparison.OrdinalIgnoreCase))
+
+                                if (!string.Equals(userIdMsg, currentUserId, StringComparison.OrdinalIgnoreCase))
                                 {
                                     await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
                                     break;
@@ -3024,10 +2801,17 @@ public class Form1 : Form
                                     stream,
                                     new UiLogger(this));
 
-                                // RefreshSlotsSafe();
                                 break;
                             }
 
+                        case "SUB_HOME":
+                            {
+                                if (parts.Length < 2) { await SendAsync(stream, "ERR|Invalid SUB_HOME\n"); break; }
+                                var userId = parts[1];
+                                _state.SubHome(clientId, userId);
+                                await SendAsync(stream, "OK|SUB_HOME\n");
+                                break;
+                            }
 
                         case "GET_NOW":
                             {
@@ -3098,6 +2882,9 @@ public class Form1 : Form
                                 // Không cần auth cho lệnh này
                                 var rows = _state.GetSlotTimeConfigs();
 
+                                // THÊM: báo hiệu bắt đầu block
+                                await SendAsync(stream, "SLOT_CONFIG_BEGIN\n");
+
                                 foreach (var r in rows)
                                 {
                                     // SLOT|S1|07:00|08:00
@@ -3107,6 +2894,7 @@ public class Form1 : Form
                                 await SendAsync(stream, "END_SLOT_CONFIG\n");
                                 break;
                             }
+
 
                         case "GET_MY_SCHEDULE":
                             {
@@ -3136,6 +2924,53 @@ public class Form1 : Form
                                 sb.AppendLine("MY_SCHEDULE_END");
 
                                 await SendAsync(stream, sb.ToString());
+                                break;
+                            }
+                        case "SUB_MY_BOOKINGS":
+                            {
+                                // SUB_MY_BOOKINGS|UserId
+                                if (parts.Length < 2) { await SendAsync(stream, "ERR|Invalid SUB_MY_BOOKINGS\n"); break; }
+
+                                var userId = parts[1];
+                                _state.SubMyBookings(clientId, userId);
+                                await SendAsync(stream, "OK|SUB_MY_BOOKINGS\n");
+                                break;
+                            }
+                        case "SUB_ROOMS":
+                            {
+                                _state.SubRooms(clientId);
+                                await SendAsync(stream, "OK|SUB_ROOMS\n");
+                                break;
+                            }
+                        case "SUB_SLOT_CONFIG":
+                            {
+                                _state.SubSlotConfig(clientId);
+                                await SendAsync(stream, "OK|SUB_SLOT_CONFIG\n");
+                                break;
+                            }
+                        case "SUB_ROOM_SLOTS":
+                            {
+                                // SUB_ROOM_SLOTS|RoomId|yyyy-MM-dd
+                                if (parts.Length < 3) { await SendAsync(stream, "ERR|Invalid SUB_ROOM_SLOTS\n"); break; }
+
+                                var roomId = parts[1];
+                                var dateKey = parts[2];
+
+                                _state.SubRoomSlots(clientId, roomId, dateKey);
+                                await SendAsync(stream, "OK|SUB_ROOM_SLOTS\n");
+                                break;
+                            }
+
+                        case "UNSUB_ROOM_SLOTS":
+                            {
+                                // UNSUB_ROOM_SLOTS|RoomId|yyyy-MM-dd
+                                if (parts.Length < 3) { await SendAsync(stream, "ERR|Invalid UNSUB_ROOM_SLOTS\n"); break; }
+
+                                var roomId = parts[1];
+                                var dateKey = parts[2];
+
+                                _state.UnsubRoomSlots(clientId, roomId, dateKey);
+                                await SendAsync(stream, "OK|UNSUB_ROOM_SLOTS\n");
                                 break;
                             }
 
@@ -3201,6 +3036,96 @@ public class Form1 : Form
 
                                 break;
                             }
+                        case "GET_ROOM_DAILY_SLOTS":
+                            {
+                                if (parts.Length < 3)
+                                {
+                                    await SendAsync(stream, "ERR|Invalid GET_ROOM_DAILY_SLOTS format\n");
+                                    break;
+                                }
+
+                                var roomId = parts[1];
+                                var dateStr = parts[2];
+
+                                if (!DateTime.TryParse(dateStr, out var date))
+                                {
+                                    // fallback: dùng hôm nay nếu parse lỗi
+                                    date = _state.Now.Date;
+                                }
+
+                                var slots = _state.GetDailySchedule(date, roomId, new UiLogger(this));
+
+                                await SendAsync(stream, "ROOM_SLOTS_BEGIN\n");
+
+                                foreach (var s in slots)
+                                {
+                                    // SLOT|SlotId|TimeRange|Status|UserId|FullName|BookingStatus|Purpose
+                                    var lineOut =
+                                        $"SLOT|{s.SlotId}|{s.TimeRange}|{s.Status}|{s.UserId}|{s.FullName}|{s.BookingStatus}|{s.Purpose}";
+                                    await SendAsync(stream, lineOut + "\n");
+                                }
+
+                                await SendAsync(stream, "ROOM_SLOTS_END\n");
+                                break;
+                            }
+                        case "GET_MY_BOOKINGS":
+                            {
+                                if (parts.Length < 2)
+                                {
+                                    await SendAsync(stream, "ERR|Invalid GET_MY_BOOKINGS format\n");
+                                    break;
+                                }
+
+                                var userIdMsg = parts[1];
+
+                                // BẮT BUỘC LOGIN trước
+                                if (currentUserId == null)
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|NOT_LOGGED_IN\n");
+                                    break;
+                                }
+
+                                // Không cho giả mạo user khác
+                                if (!string.Equals(userIdMsg, currentUserId, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    await SendAsync(stream, "INFO|ERROR|USER_MISMATCH\n");
+                                    break;
+                                }
+
+                                // Lấy lịch trong khoảng [hôm qua - 30 ngày tới]
+                                var today = _state.Now.Date;
+                                var from = today.AddDays(-1);
+                                var to = today.AddDays(30);
+
+                                var list = _state.GetUserSchedule(userIdMsg, from, to);
+
+                                await SendAsync(stream, "MY_BOOKINGS_BEGIN\n");
+
+                                foreach (var b in list)
+                                {
+                                    // FORMAT CHUẨN:
+                                    // BOOKING|BookingId|Date|RoomId|SlotFrom|SlotTo|TimeRange|Status|Purpose|CreatedAt|CheckinDeadline|CheckinTime|UpdatedAt
+                                    var lineOut =
+                                        $"BOOKING" +
+                                        $"|{b.BookingId}" +
+                                        $"|{b.Date:yyyy-MM-dd}" +
+                                        $"|{b.RoomId}" +
+                                        $"|{b.SlotStartId}" +
+                                        $"|{b.SlotEndId}" +
+                                        $"|{b.TimeRange}" +
+                                        $"|{b.Status}" +
+                                        $"|{b.Purpose}" +
+                                        $"|{b.CreatedAt:yyyy-MM-dd HH:mm:ss}" +
+                                        $"|{b.CheckinDeadline:yyyy-MM-dd HH:mm:ss}" +
+                                        $"|{(b.CheckinTime.HasValue ? b.CheckinTime.Value.ToString("yyyy-MM-dd HH:mm:ss") : "")}" +
+                                        $"|{b.UpdatedAt:yyyy-MM-dd HH:mm:ss}";
+
+                                    await SendAsync(stream, lineOut + "\n");
+                                }
+
+                                await SendAsync(stream, "MY_BOOKINGS_END\n");
+                                break;
+                            }
 
 
                         default:
@@ -3215,12 +3140,16 @@ public class Form1 : Form
             }
             finally
             {
-                Log($"[SERVER] Client {clientId ?? "UNKNOWN"} disconnected");
-                if (clientId != null)
-                {
-                    _state.HandleDisconnect(clientId, new UiLogger(this));
-                    // RefreshSlotsSafe();
-                }
+                Log($"[SERVER] Client {clientId} disconnected");
+
+                // 1️⃣ M2 – gỡ toàn bộ subscription trước
+                _state.UnsubscribeAll(clientId);
+
+                // 2️⃣ M1 – remove session + user mapping
+                _state.UnregisterClient(clientId);
+
+                // 3️⃣ (tuỳ chọn) UI / log thêm
+                _state.HandleDisconnect(clientId, new UiLogger(this));
             }
         }
     }
@@ -3445,14 +3374,17 @@ public class Form1 : Form
     }
     private void UpdateCheckinPanel()
     {
+        // Guard: if UI not fully initialized, skip
+        if (_gridSlots == null || _lblSelectedSlot == null || _btnCheckIn == null || _lblBookingUser == null)
+            return;
+
         _btnCheckIn.Enabled = false;
         _btnComplete.Enabled = false;
 
         if (_gridSlots.CurrentRow == null)
         {
             _lblSelectedSlot.Text = "Slot: (chưa chọn)";
-            _lblBookingUser.Text = "User: -";
-            _lblBookingStatus.Text = "Status: -";
+            ClearBookingDetails();
             return;
         }
 
@@ -3467,33 +3399,39 @@ public class Form1 : Form
         if (string.IsNullOrEmpty(roomId) || string.IsNullOrEmpty(slotId))
         {
             _lblSelectedSlot.Text = "Slot: (invalid)";
-            _lblBookingUser.Text = "User: -";
-            _lblBookingStatus.Text = "Status: -";
+            ClearBookingDetails();
             return;
         }
 
         _lblSelectedSlot.Text = $"Slot: {roomId} - {slotId} - {_dtDate.Value:yyyy-MM-dd}";
 
         // Gọi ServerState để lấy booking hiện tại của slot
-        // -> Bạn sẽ cần viết hàm này trong ServerState
         var date = _dtDate.Value.Date;
         var booking = _state.GetCurrentBookingForSlot(date, roomId, slotId);
 
         if (booking == null)
         {
             _lblBookingUser.Text = "User: (không có booking)";
-            _lblBookingStatus.Text = "Status: FREE";
+            ClearBookingDetails();
             return;
         }
 
-        // Giả sử BookingView có các field: UserId, FullName, UserType, Status
-        _lblBookingUser.Text = $"User: {booking.UserId} - {booking.FullName} ({booking.UserType})";
+        // Hiển thị tất cả thông tin booking
+        _lblBookingId.Text = $"BookingId: {booking.BookingId}";
+        _lblBookingUserId.Text = $"UserId: {booking.UserId}";
+        _lblBookingRoomId.Text = $"RoomId: {booking.RoomId}";
+        _lblBookingDate.Text = $"Date: {booking.Date}";
+        _lblBookingSlotStartId.Text = $"SlotStartId: {booking.SlotStartId}";
+        _lblBookingSlotEndId.Text = $"SlotEndId: {booking.SlotEndId}";
+        _lblBookingIsRange.Text = $"IsRangeBooking: {booking.IsRange}";
         _lblBookingStatus.Text = $"Status: {booking.Status}";
+        _lblBookingPurpose.Text = $"Purpose: {booking.Purpose}";
+        _lblBookingCreatedAt.Text = $"CreatedAt: {booking.CreatedAt:yyyy-MM-dd HH:mm:ss}";
+        _lblBookingUpdatedAt.Text = $"UpdatedAt: {booking.UpdatedAt:yyyy-MM-dd HH:mm:ss}";
+
+        _lblBookingUser.Text = $"User: {booking.UserId} - {booking.FullName} ({booking.UserType})";
 
         // Enable nút theo trạng thái
-        // APPROVED  -> chỉ CHECK-IN
-        // IN_USE    -> chỉ COMPLETE
-        // Các trạng thái khác: disable cả hai
         switch (booking.Status)
         {
             case "APPROVED":
@@ -3510,6 +3448,123 @@ public class Form1 : Form
                 break;
         }
     }
+
+    private void ClearBookingDetails()
+    {
+        if (_lblBookingId != null) _lblBookingId.Text = "BookingId: -";
+        if (_lblBookingUserId != null) _lblBookingUserId.Text = "UserId: -";
+        if (_lblBookingRoomId != null) _lblBookingRoomId.Text = "RoomId: -";
+        if (_lblBookingDate != null) _lblBookingDate.Text = "Date: -";
+        if (_lblBookingSlotStartId != null) _lblBookingSlotStartId.Text = "SlotStartId: -";
+        if (_lblBookingSlotEndId != null) _lblBookingSlotEndId.Text = "SlotEndId: -";
+        if (_lblBookingIsRange != null) _lblBookingIsRange.Text = "IsRangeBooking: -";
+        if (_lblBookingStatus != null) _lblBookingStatus.Text = "Status: -";
+        if (_lblBookingPurpose != null) _lblBookingPurpose.Text = "Purpose: -";
+        if (_lblBookingCreatedAt != null) _lblBookingCreatedAt.Text = "CreatedAt: -";
+        if (_lblBookingUpdatedAt != null) _lblBookingUpdatedAt.Text = "UpdatedAt: -";
+        if (_lblBookingUser != null) _lblBookingUser.Text = "User: -";
+    }
+
+    private void LstQueue_SelectedIndexChanged(object? sender, EventArgs e)
+    {
+        if (_lstQueue.SelectedIndex < 0)
+        {
+            ClearQueueUserDetails();
+            return;
+        }
+
+        var selectedText = _lstQueue.SelectedItem?.ToString();
+        var userId = ExtractUserIdFromQueueItem(selectedText);
+
+        if (string.IsNullOrWhiteSpace(userId))
+        {
+            ClearQueueUserDetails();
+            return;
+        }
+
+        if (_state.UsersInfo.TryGetValue(userId, out var userInfo))
+        {
+            _lblQueueUserUserId.Text = $"UserId: {userInfo.UserId}";
+            _lblQueueUserUserType.Text = $"UserType: {userInfo.UserType}";
+            _lblQueueUserFullName.Text = $"FullName: {userInfo.FullName}";
+            _lblQueueUserStudentId.Text = $"StudentId: {userInfo.StudentId ?? "-"}";
+            _lblQueueUserClass.Text = $"Class: {userInfo.Class ?? "-"}";
+            _lblQueueUserDepartment.Text = $"Department: {userInfo.Department ?? "-"}";
+            _lblQueueUserLecturerId.Text = $"LecturerId: {userInfo.LecturerId ?? "-"}";
+            _lblQueueUserFaculty.Text = $"Faculty: {userInfo.Faculty ?? "-"}";
+            _lblQueueUserEmail.Text = $"Email: {userInfo.Email ?? "-"}";
+            _lblQueueUserPhone.Text = $"Phone: {userInfo.Phone ?? "-"}";
+            _lblQueueUserIsActive.Text = $"IsActive: {userInfo.IsActive}";
+        }
+        else
+        {
+            // Debug nhanh: bạn có thể tạm show cái userId đã parse
+            _lblQueueUserUserId.Text = $"UserId: {userId} (NOT FOUND)";
+            ClearQueueUserDetailsExceptUserId();
+        }
+    }
+    private string ExtractUserIdFromQueueItem(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+
+        var t = text.Trim();
+
+        // bỏ các dòng không phải user
+        if (t.Equals("Queue empty", StringComparison.OrdinalIgnoreCase)) return "";
+        if (t.Equals("No selection", StringComparison.OrdinalIgnoreCase)) return "";
+
+        // 1) bỏ prefix "1. "
+        int dot = t.IndexOf('.');
+        if (dot >= 0 && dot <= 3) // "1.", "12.", "999."
+        {
+            // nếu trước dấu '.' toàn số thì strip
+            var prefix = t.Substring(0, dot).Trim();
+            if (prefix.All(char.IsDigit))
+                t = t.Substring(dot + 1).Trim();
+        }
+
+        // 2) nếu có " - " thì lấy trước " - "
+        int dash = t.IndexOf(" - ");
+        if (dash > 0) t = t.Substring(0, dash).Trim();
+
+        // 3) nếu có suffix "(RANGE ...)" thì bỏ
+        int paren = t.IndexOf(" (", StringComparison.Ordinal);
+        if (paren > 0) t = t.Substring(0, paren).Trim();
+
+        // 4) nếu còn dư token, lấy token đầu tiên
+        int space = t.IndexOf(' ');
+        if (space > 0) t = t.Substring(0, space).Trim();
+
+        return t;
+    }
+    private void ClearQueueUserDetails()
+    {
+        if (_lblQueueUserUserId != null) _lblQueueUserUserId.Text = "UserId: -";
+        if (_lblQueueUserUserType != null) _lblQueueUserUserType.Text = "UserType: -";
+        if (_lblQueueUserFullName != null) _lblQueueUserFullName.Text = "FullName: -";
+        if (_lblQueueUserStudentId != null) _lblQueueUserStudentId.Text = "StudentId: -";
+        if (_lblQueueUserClass != null) _lblQueueUserClass.Text = "Class: -";
+        if (_lblQueueUserDepartment != null) _lblQueueUserDepartment.Text = "Department: -";
+        if (_lblQueueUserLecturerId != null) _lblQueueUserLecturerId.Text = "LecturerId: -";
+        if (_lblQueueUserFaculty != null) _lblQueueUserFaculty.Text = "Faculty: -";
+        if (_lblQueueUserEmail != null) _lblQueueUserEmail.Text = "Email: -";
+        if (_lblQueueUserPhone != null) _lblQueueUserPhone.Text = "Phone: -";
+        if (_lblQueueUserIsActive != null) _lblQueueUserIsActive.Text = "IsActive: -";
+    }
+    private void ClearQueueUserDetailsExceptUserId()
+    {
+        if (_lblQueueUserUserType != null) _lblQueueUserUserType.Text = "UserType: -";
+        if (_lblQueueUserFullName != null) _lblQueueUserFullName.Text = "FullName: -";
+        if (_lblQueueUserStudentId != null) _lblQueueUserStudentId.Text = "StudentId: -";
+        if (_lblQueueUserClass != null) _lblQueueUserClass.Text = "Class: -";
+        if (_lblQueueUserDepartment != null) _lblQueueUserDepartment.Text = "Department: -";
+        if (_lblQueueUserLecturerId != null) _lblQueueUserLecturerId.Text = "LecturerId: -";
+        if (_lblQueueUserFaculty != null) _lblQueueUserFaculty.Text = "Faculty: -";
+        if (_lblQueueUserEmail != null) _lblQueueUserEmail.Text = "Email: -";
+        if (_lblQueueUserPhone != null) _lblQueueUserPhone.Text = "Phone: -";
+        if (_lblQueueUserIsActive != null) _lblQueueUserIsActive.Text = "IsActive: -";
+    }
+
     private void BtnCheckIn_Click(object? sender, EventArgs e)
     {
         if (_gridSlots.CurrentRow == null)
@@ -3831,6 +3886,9 @@ public class Form1 : Form
 
     private void UpdateQueueViewForSelected()
     {
+        if (_gridSlots == null || _lblQueueTitle == null || _lstQueue == null)
+            return;
+
         if (_gridSlots.CurrentRow == null ||
             _gridSlots.CurrentRow.DataBoundItem is not SlotSummary summary)
         {
@@ -3845,21 +3903,14 @@ public class Form1 : Form
 
         _lblQueueTitle.Text = $"Queue for: {summary.Date} - {roomId}-{slotId}";
 
-        var clients = _state.GetQueueClients(roomId, slotId);
+        // ✅ FIX: lấy queue đúng ngày của row đang chọn
+        var clients = _state.GetQueueClients(summary.Date, roomId, slotId);
 
         _lstQueue.Items.Clear();
-        if (clients.Count == 0)
-        {
-            _lstQueue.Items.Add("Queue empty");
-        }
-        else
-        {
-            for (int i = 0; i < clients.Count; i++)
-            {
-                _lstQueue.Items.Add($"{i + 1}. {clients[i]}");
-            }
-        }
+        if (clients.Count == 0) _lstQueue.Items.Add("Queue empty");
+        else for (int i = 0; i < clients.Count; i++) _lstQueue.Items.Add($"{i + 1}. {clients[i]}");
     }
+
 
     private void BtnRoomAdd_Click(object? sender, EventArgs e)
     {
@@ -4156,7 +4207,7 @@ public class Form1 : Form
     {
         var logger = new UiLogger(this);
         var snapshotPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "state.json");
-
+        logger.WriteLine("FORM CLOSING CALLED!");
         _state.SaveSnapshotToFile(snapshotPath, logger);
     }
 
@@ -4225,7 +4276,6 @@ public class Form1 : Form
             _txtUserLecturerId.Text = "";
         }
     }
-
 
     private void BtnAddUser_Click(object? sender, EventArgs e)
     {
@@ -4336,31 +4386,6 @@ public class Form1 : Form
         MessageBox.Show("Cập nhật user thành công.");
         RefreshUserGrid();
     }
-    private void BtnToggleActive_Click(object? sender, EventArgs e)
-    {
-        if (_gridUsers.CurrentRow == null)
-        {
-            MessageBox.Show("Chọn 1 user trước.");
-            return;
-        }
-
-        var userId = _gridUsers.CurrentRow.Cells["UserId"].Value?.ToString();
-        if (string.IsNullOrWhiteSpace(userId)) return;
-
-        bool isActive = false;
-        bool.TryParse(_gridUsers.CurrentRow.Cells["IsActive"].Value?.ToString(), out isActive);
-
-        var newActive = !isActive;
-
-        if (!_state.SetUserActive(userId, newActive, out string error))
-        {
-            MessageBox.Show(error, "SetUserActive failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
-        }
-
-        MessageBox.Show(newActive ? "User đã được mở khoá." : "User đã bị khóa.");
-        RefreshUserGrid();
-    }
     private void BtnDeleteUser_Click(object? sender, EventArgs e)
     {
         if (_gridUsers.CurrentRow == null)
@@ -4436,4 +4461,44 @@ public class Form1 : Form
         _gridRoomDaily.DataSource = list;
     }
 
+    // ===== HELPER: Tạo form con hiển thị Slots & Tabs =====
+    /// <summary>
+    /// Tạo một form con chứa BuildLeftTabs (Slot view) và BuildRightTabs (Management tabs)
+    /// Có thể phóng to, thu nhỏ, hoặc đặt ở bất kỳ vị trí nào.
+    /// </summary>
+    public void ShowSlotsAndTabsWindow(string title = "Slots & Management", int width = 1200, int height = 750)
+    {
+        var form = new Form
+        {
+            Text = title,
+            Width = width,
+            Height = height,
+            StartPosition = FormStartPosition.CenterParent,
+            ShowIcon = false
+        };
+
+        // Tạo layout giống như form chính
+        var mainSplit = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterDistance = 450,
+            BorderStyle = BorderStyle.Fixed3D
+        };
+        form.Controls.Add(mainSplit);
+
+        // Dùng các hàm build existing (BuildLeftTabs/BuildRightTabs đã tách sẵn)
+        // Tạm thời: tái sử dụng lại các control của form hiện tại
+        // Trong thực tế, bạn có thể:
+        // 1. Tách BuildLeftTabs/BuildRightTabs thành method không phụ thuộc field
+        // 2. Truyền Panel vào thay vì _mainSplit
+        // Ví dụ:
+        //   BuildLeftTabsIntoPanel(mainSplit.Panel1, serverState);
+        //   BuildRightTabsIntoPanel(mainSplit.Panel2, serverState);
+
+        form.Show(this);
+    }
+
 }
+
+

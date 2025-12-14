@@ -379,16 +379,23 @@ namespace BookingClient
                                 Class = parts[7],
                                 Department = parts[8],
                                 LecturerId = parts[9],
-                                Faculty = parts[10]
+                                Faculty = parts[10],
+                                Password = password
                             };
 
                             // Lưu nhớ tài khoản nếu user chọn
                             SaveRememberedLogin(info.UserId);
 
-                            // Mở Main Client Form
-                            var mainForm = new MainClientForm(info, _detectedServerIp, this);
-                            mainForm.Show();
-                            this.Hide();
+                            try
+                            {
+                                var mainForm = new MainClientForm(info, _detectedServerIp, this);
+                                mainForm.Show();
+                                this.Hide();
+                            }
+                            catch (Exception ex2)
+                            {
+                                MessageBox.Show("Lỗi trong MainClientForm:\n" + ex2.ToString());
+                            }
                         }
                         else if (parts[0] == "LOGIN_FAIL")
                         {
@@ -551,5 +558,8 @@ namespace BookingClient
         // Thông tin liên hệ chung (thêm mới)
         public string Email { get; set; } = "";
         public string Phone { get; set; } = "";
+
+        // 🔐 Lưu password để LOGIN lại trên kết nối chính
+        public string Password { get; set; } = "";
     }
 }
