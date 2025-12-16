@@ -1,3 +1,8 @@
+    /// <summary>
+    /// Returns the Booking for a slot, or a pseudo-booking if the slot is event-locked but has no booking.
+    /// </summary>
+    
+
 // BookingServer/ServerState.cs
 using System;
 using System.Collections.Generic;
@@ -8,6 +13,7 @@ using System.Text;
 using BC = BCrypt.Net.BCrypt;
 using BCryptNet = BCrypt.Net.BCrypt;
 using System.Text.Json;
+using System.Threading.Tasks;
 using System.Net;
 using System.Net.Mail;
 
@@ -43,16 +49,15 @@ public class SlotSummary
 
 }
 
-class ServerState
-{
-    // ===== CẤU HÌNH PHÒNG + CA =====
-    private static readonly string[] Rooms =
-    {
-        "A08","A16","A24","A32",
-        "A21","A22","A23",
-        "A24-A25","A31","A32-A33","A34-A35"
-    };
+class ServerState{
+    // ===== FIXED SCHEDULE INDEX =====
+    // dateKey -> list session
+    private readonly Dictionary<string, List<FixedSession>> _fixedSessionsByDate = new();
+    // userId -> set sessionId
+    private readonly Dictionary<string, HashSet<Guid>> _fixedSessionIdsByUser = new(StringComparer.OrdinalIgnoreCase);
 
+    // Tạo danh sách ngày trong khoảng from..to theo thứ trong tuần
+    
     private const int SlotCount = 14; // ca 1..14
                                       // KEY dạng "A08::RANGE::S3-S6"
     private readonly Dictionary<string, Queue<(string clientId, string userId, NetworkStream stream, string purpose, Guid bookingId)>> _rangeQueues
@@ -67,6 +72,7 @@ class ServerState
     private readonly Dictionary<string, Dictionary<string, SlotState>> _slotsByDate = new();
     private readonly object _lock = new();
     public event Action? StateChanged;
+    public event Action? FixedScheduleCreated; // ✅ Event riêng cho fixed schedule
 
     private string _currentDateKey = DateTime.Today.ToString("yyyy-MM-dd");
     // ===== DATA MÔ HÌNH THỰC TẾ (ROOMS / USERS / BOOKINGS) =====
@@ -75,10 +81,16 @@ class ServerState
     private readonly Dictionary<string, RoomInfo> _rooms = new();
 
     // Thông tin người dùng (UserInfo) key theo UserId (sv001, gv001, admin,...)
-    private readonly Dictionary<string, UserInfo> _users = new();
+    private readonly Dictionary<string, UserInfo> _users = new(StringComparer.OrdinalIgnoreCase);
+
 
     // Danh sách booking "thực tế" – sẽ dùng ở các milestone sau
     private readonly List<Booking> _bookings = new();
+
+    // ===== FIXED SCHEDULE DATA =====
+    // Danh sách các FixedSession (lịch cố định)
+    private readonly List<FixedSession> _fixedSessions = new();
+    // (Đã loại bỏ _fixedSessionByUser, chỉ dùng _fixedSessionIdsByUser)
 
     // Expose read-only cho UI/logic khác (dùng ở milestone sau)
     public IReadOnlyDictionary<string, RoomInfo> RoomsInfo => _rooms;
@@ -87,6 +99,7 @@ class ServerState
     // ===== App settings (Tab Settings) =====
     private AppSettings _settings = AppSettings.CreateDefault();
     private const string SettingsFileName = "appsettings.json";
+    private const string RoomsFileName = "rooms.json";
 
     // Mapping mỗi connection (clientId) -> userId thật
     private readonly Dictionary<string, string> _clientToUser = new();
@@ -224,6 +237,7 @@ class ServerState
     // Constructor: seed dữ liệu demo
     public ServerState()
     {
+        LoadRooms();
         InitDemoData();
         LoadSettings(); // <- load appsettings.json nếu có
         // Start background timer to sweep queued bookings and cancel overdue ones
@@ -267,6 +281,89 @@ class ServerState
         }
     }
 
+    private void LoadRooms()
+    {
+        try
+        {
+            if (!File.Exists(RoomsFileName))
+                return;
+
+            var json = File.ReadAllText(RoomsFileName);
+            var loaded = JsonSerializer.Deserialize<List<RoomInfo>>(json);
+            if (loaded == null)
+                return;
+
+            lock (_lock)
+            {
+                _rooms.Clear();
+                foreach (var r in loaded)
+                {
+                    if (r == null) continue;
+                    r.RoomId = (r.RoomId ?? "").Trim().ToUpperInvariant();
+                    if (string.IsNullOrWhiteSpace(r.RoomId)) continue;
+                    r.Status = NormalizeRoomStatus(r.Status);
+                    _rooms[r.RoomId] = r;
+                }
+            }
+        }
+        catch
+        {
+            // ignore lỗi, dùng demo data
+        }
+    }
+
+    private static string NormalizeRoomStatus(string? status)
+    {
+        var s = (status ?? "").Trim().ToUpperInvariant();
+        if (string.Equals(s, "DISABLED", StringComparison.OrdinalIgnoreCase))
+            return "DISABLED";
+        return "ACTIVE";
+    }
+
+    private bool IsRoomDisabled(string roomId)
+    {
+        roomId = (roomId ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(roomId))
+            return false;
+
+        if (!_rooms.TryGetValue(roomId, out var r) || r == null)
+            return false;
+
+        return string.Equals(NormalizeRoomStatus(r.Status), "DISABLED", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SaveRooms()
+    {
+        try
+        {
+            List<RoomInfo> snapshot;
+            lock (_lock)
+            {
+                snapshot = _rooms.Values
+                    .Select(r => new RoomInfo
+                    {
+                        RoomId = (r.RoomId ?? "").Trim().ToUpperInvariant(),
+                        Building = r.Building ?? "",
+                        Capacity = r.Capacity,
+                        HasProjector = r.HasProjector,
+                        HasPC = r.HasPC,
+                        HasAirConditioner = r.HasAirConditioner,
+                        HasMic = r.HasMic,
+                        Status = NormalizeRoomStatus(r.Status)
+                    })
+                    .ToList();
+            }
+
+            var json = JsonSerializer.Serialize(snapshot,
+                new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(RoomsFileName, json);
+        }
+        catch
+        {
+            // ignore
+        }
+    }
+
     public void UpdateSettings(AppSettings newSettings)
     {
         if (newSettings == null) return;
@@ -293,68 +390,9 @@ class ServerState
     /// Seed dữ liệu demo cho Rooms / Users.
     private void InitDemoData()
     {
-        // Seed phòng từ mảng Rooms có sẵn
-        foreach (var roomId in Rooms)
-        {
-            if (_rooms.ContainsKey(roomId)) continue;
-
-            _rooms[roomId] = new RoomInfo
-            {
-                RoomId = roomId,
-                Building = "CS1 - Tòa A",           // demo, sau này có thể tách theo cơ sở
-                Capacity = 60,                      // demo
-                HasProjector = true,                // giả sử phòng nào cũng có máy chiếu
-                HasPC = roomId.StartsWith("A2", StringComparison.OrdinalIgnoreCase),
-                HasAirConditioner = true,
-                HasMic = roomId.StartsWith("A3", StringComparison.OrdinalIgnoreCase),
-                Status = "ACTIVE"
-            };
-        }
-
         // Seed một vài user demo (Student / Lecturer / Staff)
         if (_users.Count == 0)
         {
-            _users["sv001"] = new UserInfo
-            {
-                UserId = "sv001",
-                UserType = "Student",
-                FullName = "Nguyễn Văn A",
-                StudentId = "N21DCCN001",
-                Class = "D21CQCN01-N",
-                Department = "CNTT",
-                Email = "sv001@example.com",
-                Phone = "0900000001",
-                PasswordHash = BC.HashPassword("sv123"),
-                IsActive = true
-            };
-
-            _users["sv002"] = new UserInfo
-            {
-                UserId = "sv002",
-                UserType = "Student",
-                FullName = "Trần Thị B",
-                StudentId = "N21DCCN002",
-                Class = "D21CQCN02-N",
-                Department = "CNTT",
-                Email = "sv002@example.com",
-                Phone = "0900000002",
-                PasswordHash = BC.HashPassword("sv123"),
-                IsActive = true
-            };
-
-            _users["gv001"] = new UserInfo
-            {
-                UserId = "gv001",
-                UserType = "Lecturer",
-                FullName = "Thầy C",
-                LecturerId = "GV001",
-                Faculty = "Khoa CNTT",
-                Email = "gv001@example.com",
-                Phone = "0900000003",
-                PasswordHash = BC.HashPassword("gv123"),
-                IsActive = true
-            };
-
             _users["admin"] = new UserInfo
             {
                 UserId = "admin",
@@ -377,7 +415,7 @@ class ServerState
         if (_slotsByDate.ContainsKey(dateKey)) return;
 
         var dict = new Dictionary<string, SlotState>();
-        foreach (var room in Rooms)
+        foreach (var room in _rooms.Keys)
         {
             for (int i = 1; i <= SlotCount; i++)
             {
@@ -386,7 +424,8 @@ class ServerState
                 dict[key] = new SlotState
                 {
                     IsBusy = false,
-                    CurrentHolderClientId = null
+                    CurrentHolderClientId = null,
+                    CurrentHolderUserId = null
                 };
             }
         }
@@ -414,7 +453,90 @@ class ServerState
     private readonly Dictionary<string, ClientSession> _sessions = new();
 
     // userId -> list clientId (1 user có thể login nhiều nơi)
-    private readonly Dictionary<string, HashSet<string>> _userToClients = new();
+    private readonly Dictionary<string, HashSet<string>> _userToClients = new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly object _notifyLock = new();
+    private readonly Dictionary<string, Queue<string>> _pendingNotifications =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private readonly object _homeNotiLock = new();
+    private readonly Dictionary<string, Queue<string>> _homeNotifications =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private string? TryConvertNotifyLineToHomeMessage(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return null;
+
+        var trimmed = line.Trim();
+        if (trimmed.EndsWith("\n", StringComparison.Ordinal))
+            trimmed = trimmed.TrimEnd('\n');
+
+        if (!trimmed.StartsWith("NOTIFY_", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var p = trimmed.Split('|');
+        if (p.Length == 0) return null;
+
+        if (trimmed.StartsWith("NOTIFY_GRANT|", StringComparison.OrdinalIgnoreCase) && p.Length >= 5)
+            return $"Phòng {p[1]} ca {p[2]} ngày {p[3]} đã được grant. Vui lòng check-in trước {p[4]}.";
+
+        if (trimmed.StartsWith("NOTIFY_CHECKIN|", StringComparison.OrdinalIgnoreCase) && p.Length >= 5)
+            return $"Bạn đã check-in phòng {p[1]} ca {p[2]} ngày {p[3]} lúc {p[4]}.";
+
+        if (trimmed.StartsWith("NOTIFY_COMPLETE|", StringComparison.OrdinalIgnoreCase) && p.Length >= 5)
+            return $"Booking phòng {p[1]} ca {p[2]} ngày {p[3]} đã hoàn thành lúc {p[4]}.";
+
+        if (trimmed.StartsWith("NOTIFY_NO_SHOW|", StringComparison.OrdinalIgnoreCase) && p.Length >= 5)
+            return $"⚠️ Bạn đã bị NO-SHOW: phòng {p[1]} ca {p[2]} ngày {p[3]} (quá deadline check-in {p[4]}).";
+
+        if (trimmed.StartsWith("NOTIFY_FIXED|", StringComparison.OrdinalIgnoreCase) && p.Length >= 5)
+            return $"Fixed Schedule: {p[4]} in {p[1]}-{p[2]} on {p[3]}";
+
+        if (trimmed.StartsWith("NOTIFY_FIXED_CREATED|", StringComparison.OrdinalIgnoreCase) && p.Length >= 8)
+        {
+            var slotRange = p[4] == p[5] ? p[4] : $"{p[4]}-{p[5]}";
+            return $"Bạn có lịch cố định mới: {p[0]} {p[1]} - {p[2]} | {p[3]} | {slotRange} | {p[6]} -> {p[7]}";
+        }
+
+        if (trimmed.StartsWith("NOTIFY_FIXED_DELETED|", StringComparison.OrdinalIgnoreCase) && p.Length >= 8)
+        {
+            var slotRange = p[4] == p[5] ? p[4] : $"{p[4]}-{p[5]}";
+            return $"Lịch cố định đã bị xoá: {p[0]} {p[1]} - {p[2]} | {p[3]} | {slotRange} | {p[6]} -> {p[7]}";
+        }
+
+        return trimmed;
+    }
+
+    private void AddHomeNotification(string userId, string message)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(message))
+            return;
+
+        lock (_homeNotiLock)
+        {
+            if (!_homeNotifications.TryGetValue(userId, out var q))
+                _homeNotifications[userId] = q = new Queue<string>();
+
+            if (q.Count >= 200)
+                q.Dequeue();
+
+            q.Enqueue(message);
+        }
+    }
+
+    public List<string> GetHomeNotifications(string userId, int max = 20)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || max <= 0)
+            return new List<string>();
+
+        lock (_homeNotiLock)
+        {
+            if (!_homeNotifications.TryGetValue(userId, out var q) || q.Count == 0)
+                return new List<string>();
+
+            return q.Reverse().Take(max).ToList();
+        }
+    }
 
     public void RegisterClient(string clientId, NetworkStream stream)
     {
@@ -513,6 +635,66 @@ class ServerState
         return ok;
     }
 
+    public void FlushPendingNotifications(string userId, TextWriter? log = null)
+    {
+        Queue<string>? q;
+        lock (_notifyLock)
+        {
+            if (!_pendingNotifications.TryGetValue(userId, out q) || q.Count == 0)
+                return;
+        }
+
+        int delivered = 0;
+        while (true)
+        {
+            string? msg;
+            lock (_notifyLock)
+            {
+                if (!_pendingNotifications.TryGetValue(userId, out q) || q.Count == 0)
+                    break;
+                msg = q.Dequeue();
+                if (q.Count == 0) _pendingNotifications.Remove(userId);
+            }
+
+            if (!string.IsNullOrEmpty(msg))
+            {
+                SendToUser(userId, msg);
+                delivered++;
+            }
+        }
+
+        log?.WriteLine($"[NOTIFY] Flushed pending notifications for {userId}: {delivered}");
+    }
+
+    private void NotifyUser(string userId, string msgLine)
+    {
+        if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(msgLine))
+            return;
+
+        var line = msgLine.EndsWith("\n", StringComparison.Ordinal) ? msgLine : (msgLine + "\n");
+
+        try
+        {
+            var homeMsg = TryConvertNotifyLineToHomeMessage(line);
+            if (!string.IsNullOrWhiteSpace(homeMsg))
+                AddHomeNotification(userId, homeMsg);
+        }
+        catch { }
+
+        var sent = SendToUser(userId, line);
+        if (sent > 0) return;
+
+        lock (_notifyLock)
+        {
+            if (!_pendingNotifications.TryGetValue(userId, out var q))
+                _pendingNotifications[userId] = q = new Queue<string>();
+
+            if (q.Count >= 200)
+                q.Dequeue();
+            q.Enqueue(line);
+        }
+    }
+
 
     // Lấy danh sách summary cho tất cả slot của ngày hiện tại -> hiển thị lên grid
     public List<SlotSummary> GetAllSlotSummaries()
@@ -544,13 +726,19 @@ class ServerState
                     status = slot.IsBusy ? "BUSY" : "FREE";
                 }
 
+                var holderUserId = !string.IsNullOrEmpty(slot.CurrentHolderUserId)
+                    ? slot.CurrentHolderUserId
+                    : (!string.IsNullOrEmpty(slot.CurrentHolderClientId)
+                        ? (GetUserIdForClient(slot.CurrentHolderClientId) ?? slot.CurrentHolderClientId)
+                        : "");
+
                 result.Add(new SlotSummary
                 {
                     Date = _currentDateKey,
                     RoomId = roomId,
                     SlotId = slotId,
                     Status = status,
-                    Holder = slot.CurrentHolderClientId ?? "",
+                    Holder = holderUserId,
                     QueueLength = slot.WaitingQueue.Count,
                     IsEventLocked = slot.IsEventLocked
                 });
@@ -562,6 +750,7 @@ class ServerState
 
     public (bool Success, string? UserType, string Error) ValidateUserCredentials(string userId, string password)
     {
+        userId = (userId ?? "").Trim().ToUpperInvariant();
         if (!_users.TryGetValue(userId, out var user))
             return (false, null, "User not found");
 
@@ -755,67 +944,219 @@ class ServerState
             return true;
         }
     }
-    public bool CreateFixedWeeklyClassSchedule(string subjectCode, string subjectName, string className, string roomId, DayOfWeek dayOfWeek, string slotStartId, string slotEndId, DateTime fromDate, DateTime toDate, TextWriter log, out string error)
+
+    // Tạo lịch cố định: chỉ tạo FixedSession, không tạo booking per-user
+    public bool CreateFixedWeeklyClassSchedule(string subjectCode, string subjectName, string className, string roomId, DayOfWeek dayOfWeek, string slotStartId, string slotEndId, DateTime fromDate, DateTime toDate, TextWriter log, out string error, string lecturerId = "", List<string>? studentIds = null)
     {
         error = "";
-
-        if (string.IsNullOrWhiteSpace(roomId))
+        try
         {
-            error = "RoomId không được để trống.";
-            return false;
-        }
+            log.WriteLine($"[FIXED_SESSION][START] Creating fixed schedule:");
+            log.WriteLine($"  Subject: {subjectCode} - {subjectName}");
+            log.WriteLine($"  Class: {className}");
+            log.WriteLine($"  Room: {roomId}");
+            log.WriteLine($"  DayOfWeek: {dayOfWeek}");
+            log.WriteLine($"  Slot: {slotStartId} to {slotEndId}");
+            log.WriteLine($"  Date range: {fromDate:yyyy-MM-dd} to {toDate:yyyy-MM-dd}");
+            log.WriteLine($"  Lecturer: {lecturerId}");
+            log.WriteLine($"  Students: {(studentIds != null ? string.Join(",", studentIds) : "(none)")}");
 
-        if (fromDate.Date > toDate.Date)
-        {
-            error = "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc.";
-            return false;
-        }
-
-        int startIdx = ParseSlotIndex(slotStartId);
-        int endIdx = ParseSlotIndex(slotEndId);
-
-        if (startIdx <= 0 || endIdx <= 0 || startIdx > endIdx || endIdx > SlotCount)
-        {
-            error = "Khoảng ca học không hợp lệ (slot start / end).";
-            return false;
-        }
-
-        // Ghi chú hiển thị trên Event lock
-        string note = $"{subjectCode} - {subjectName} ({className})".Trim();
-        if (string.IsNullOrWhiteSpace(note))
-            note = "Lịch môn học cố định";
-
-        var current = fromDate.Date;
-
-        while (current <= toDate.Date)
-        {
-            if (current.DayOfWeek == dayOfWeek)
+            int startIdx = ParseSlotIndex(slotStartId);
+            int endIdx = ParseSlotIndex(slotEndId);
+            if (string.IsNullOrWhiteSpace(roomId))
             {
-                var dateKey = current.ToString("yyyy-MM-dd");
-                log.WriteLine($"[FIXED_SCHEDULE] Apply {note} {roomId} {slotStartId}-{slotEndId} on {dateKey}");
+                error = "RoomId không được để trống.";
+                log.WriteLine($"[FIXED_SESSION][ERROR] {error}");
+                return false;
+            }
+            if (fromDate.Date > toDate.Date)
+            {
+                error = "Ngày bắt đầu phải nhỏ hơn hoặc bằng ngày kết thúc.";
+                log.WriteLine($"[FIXED_SESSION][ERROR] {error}");
+                return false;
+            }
+            if (startIdx <= 0 || endIdx <= 0 || startIdx > endIdx || endIdx > SlotCount)
+            {
+                error = "Khoảng ca học không hợp lệ (slot start / end).";
+                log.WriteLine($"[FIXED_SESSION][ERROR] {error}");
+                return false;
+            }
+            // Ghi chú hiển thị trên Event lock
+            string note = $"{subjectCode} - {subjectName} ({className})".Trim();
+            if (!string.IsNullOrWhiteSpace(lecturerId))
+                note += $" | GV: {lecturerId}";
+            if (studentIds != null && studentIds.Count > 0)
+                note += $" | SV: {string.Join(",", studentIds)}";
+            if (string.IsNullOrWhiteSpace(note))
+                note = "Lịch môn học cố định";
 
-                for (int idx = startIdx; idx <= endIdx; idx++)
+            // Tạo FixedSession
+            var session = new FixedSession
+            {
+                SubjectCode = subjectCode,
+                SubjectName = subjectName,
+                Class = className,
+                LecturerUserId = lecturerId,
+                StudentUserIds = studentIds != null ? new List<string>(studentIds) : new List<string>(),
+                RoomId = roomId,
+                DayOfWeek = dayOfWeek.ToString(),
+                SlotStartId = slotStartId,
+                SlotEndId = slotEndId,
+                DateFrom = fromDate.ToString("yyyy-MM-dd"),
+                DateTo = toDate.ToString("yyyy-MM-dd"),
+                Note = note,
+                CreatedAt = Now,
+                UpdatedAt = Now
+            };
+            // Add participants
+            if (!string.IsNullOrWhiteSpace(lecturerId))
+            {
+                session.Participants.Add(new FixedParticipant { UserId = lecturerId, SessionId = session.SessionId, Role = "Lecturer" });
+            }
+            if (studentIds != null)
+            {
+                foreach (var sid in studentIds)
                 {
-                    var slotId = $"S{idx}"; // dùng đúng format SlotId
+                    session.Participants.Add(new FixedParticipant { UserId = sid, SessionId = session.SessionId, Role = "Student" });
+                }
+            }
+            log.WriteLine($"[FIXED_SESSION][DETAILS] SessionId: {session.SessionId}");
+            log.WriteLine($"[FIXED_SESSION][DETAILS] Note: {note}");
+            log.WriteLine($"[FIXED_SESSION][DETAILS] Participants: {string.Join(", ", session.Participants.Select(p => p.UserId + ":" + p.Role))}");
 
-                    // Dùng lại logic lock event hiện có
-                    if (!LockSlotForEvent(current, roomId, slotId, note, log, out var err))
-                    {
-                        error = $"Không thể khóa {roomId}-{slotId} vào ngày {dateKey}: {err}";
-                        return false;
-                    }
+            // Add to main list
+            _fixedSessions.Add(session);
+            // Cập nhật index phụ _fixedSessionIdsByUser
+            if (!string.IsNullOrWhiteSpace(lecturerId))
+            {
+                if (!_fixedSessionIdsByUser.TryGetValue(lecturerId, out var set))
+                    _fixedSessionIdsByUser[lecturerId] = set = new HashSet<Guid>();
+                set.Add(session.SessionId);
+            }
+            if (studentIds != null)
+            {
+                foreach (var sid in studentIds)
+                {
+                    if (!_fixedSessionIdsByUser.TryGetValue(sid, out var set))
+                        _fixedSessionIdsByUser[sid] = set = new HashSet<Guid>();
+                    set.Add(session.SessionId);
                 }
             }
 
-            current = current.AddDays(1);
-        }
+            // Lock các slot event cho từng ngày phù hợp
+            var current = fromDate.Date;
+            var affectedSlots = new List<string>();
+            while (current <= toDate.Date)
+            {
+                if (current.DayOfWeek == dayOfWeek)
+                {
+                    var dateKey = current.ToString("yyyy-MM-dd");
+                    log.WriteLine($"[FIXED_SESSION] Apply {note} {roomId} {slotStartId}-{slotEndId} on {dateKey}");
+                    for (int idx = startIdx; idx <= endIdx; idx++)
+                    {
+                        var slotId = $"S{idx}";
+                        if (!LockSlotForEvent(current, roomId, slotId, note, log, out var err))
+                        {
+                            error = $"Không thể khóa {roomId}-{slotId} vào ngày {dateKey}: {err}";
+                            log.WriteLine($"[FIXED_SESSION][ERROR] {error}");
+                            return false;
+                        }
+                        // Đánh dấu ngày đã lock trong session
+                        session.LockedDates.Add(dateKey);
+                        affectedSlots.Add($"{dateKey} {roomId}-{slotId}");
+                    }
+                }
+                current = current.AddDays(1);
+            }
+            log.WriteLine($"[FIXED_SESSION][AFFECTED] Total slots locked: {affectedSlots.Count}");
+            foreach (var s in affectedSlots) log.WriteLine($"[FIXED_SESSION][AFFECTED] {s}");
 
-        return true;
+            // Push reload cho các user liên quan
+            var allUserIds = new List<string>();
+            if (!string.IsNullOrWhiteSpace(lecturerId))
+            {
+                allUserIds.Add(lecturerId);
+                PushFixedSessionsChanged(lecturerId);
+                PushHomeChanged(lecturerId);
+            }
+            if (studentIds != null)
+            {
+                foreach (var sid in studentIds)
+                {
+                    allUserIds.Add(sid);
+                    PushFixedSessionsChanged(sid);
+                    PushHomeChanged(sid);
+                }
+            }
+
+            var fixedNotify =
+                $"NOTIFY_FIXED_CREATED|{SafeField(subjectCode)}|{SafeField(subjectName)}|{SafeField(roomId)}|{SafeField(slotStartId)}|{SafeField(slotEndId)}|{fromDate:yyyy-MM-dd}|{toDate:yyyy-MM-dd}";
+            foreach (var uid in allUserIds.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                NotifyUser(uid, fixedNotify);
+            }
+
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var emailSubject = "[Room booking] Bạn có lịch cố định mới";
+                foreach (var uid in allUserIds.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var body =
+                        "Bạn vừa được thêm vào một lịch cố định.\n\n" +
+                        $"- Môn: {subjectCode} - {subjectName}\n" +
+                        $"- Lớp: {className}\n" +
+                        $"- Phòng: {roomId}\n" +
+                        $"- Ca: {slotStartId} - {slotEndId}\n" +
+                        $"- Từ ngày: {fromDate:yyyy-MM-dd}\n" +
+                        $"- Đến ngày: {toDate:yyyy-MM-dd}\n" +
+                        $"- Thứ: {dayOfWeek}";
+                    QueueEmailToUser(uid, emailSubject, body, log);
+                }
+            }
+            
+            // Push fixed schedule ngay lập tức cho tất cả participants
+            log.WriteLine($"[FIXED_SESSION][PUSH] About to push to {allUserIds.Distinct().Count()} participants");
+            foreach (var uid in allUserIds.Distinct())
+            {
+                log.WriteLine($"[FIXED_SESSION][PUSH] Pushing to {uid}");
+                PushMyFixedSchedule(uid);
+            }
+            
+            // Raise StateChanged để server UI update ngay lập tức
+            log.WriteLine($"[FIXED_SESSION][RAISE] Calling RaiseStateChanged");
+            RaiseStateChanged();
+            
+            // ✅ Raise event riêng cho fixed schedule
+            log.WriteLine($"[FIXED_SESSION][EVENT] Raising FixedScheduleCreated event");
+            FixedScheduleCreated?.Invoke();
+            
+            log.WriteLine($"[FIXED_SESSION][SUCCESS] Fixed schedule created successfully. SessionId: {session.SessionId}");
+            log.WriteLine($"[FIXED_SESSION][COMPLETE] All operations completed");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"Exception: {ex.Message}\n{ex.StackTrace}";
+            log.WriteLine($"[FIXED_SESSION][EXCEPTION] {error}");
+            return false;
+        }
+    }
+
+    // Push notification cho client khi fixed session thay đổi
+    private void PushFixedSessionsChanged(string userId)
+    {
+        // Gửi thông báo cho client: "FIXED_SESSION_CHANGED"
+        SendToUser(userId, "FIXED_SESSION_CHANGED\n");
     }
 
     public bool CreateUser(UserInfo newUser, string passwordPlain, out string error)
     {
         error = "";
+
+        newUser.UserId = (newUser.UserId ?? "").Trim().ToUpperInvariant();
+        newUser.StudentId = (newUser.StudentId ?? "").Trim().ToUpperInvariant();
+        newUser.LecturerId = (newUser.LecturerId ?? "").Trim().ToUpperInvariant();
+        newUser.Class = (newUser.Class ?? "").Trim().ToUpperInvariant();
 
         if (string.IsNullOrWhiteSpace(newUser.UserId))
         {
@@ -896,6 +1237,9 @@ class ServerState
             return false;
         }
 
+        room.RoomId = (room.RoomId ?? "").Trim().ToUpperInvariant();
+        room.Status = NormalizeRoomStatus(room.Status);
+
         if (string.IsNullOrWhiteSpace(room.RoomId))
         {
             error = "RoomId is required";
@@ -911,6 +1255,27 @@ class ServerState
             }
 
             _rooms[room.RoomId] = room;
+
+            foreach (var dateEntry in _slotsByDate)
+            {
+                var dictSlots = dateEntry.Value;
+                for (int i = 1; i <= SlotCount; i++)
+                {
+                    var slotId = GetSlotId(i);
+                    var key = MakeKey(room.RoomId, slotId);
+                    if (dictSlots.ContainsKey(key))
+                        continue;
+
+                    dictSlots[key] = new SlotState
+                    {
+                        IsBusy = false,
+                        CurrentHolderClientId = null,
+                        CurrentHolderUserId = null
+                    };
+                }
+            }
+
+            SaveRooms();
             PushRoomsChanged();
             return true;
         }
@@ -925,6 +1290,9 @@ class ServerState
             error = "Room is null";
             return false;
         }
+
+        room.RoomId = (room.RoomId ?? "").Trim().ToUpperInvariant();
+        room.Status = NormalizeRoomStatus(room.Status);
 
         if (string.IsNullOrWhiteSpace(room.RoomId))
         {
@@ -941,6 +1309,7 @@ class ServerState
             }
 
             _rooms[room.RoomId] = room;
+            SaveRooms();
             PushRoomsChanged();
             return true;
         }
@@ -949,6 +1318,8 @@ class ServerState
     public bool DeleteRoom(string roomId, out string error)
     {
         error = "";
+
+        roomId = (roomId ?? "").Trim().ToUpperInvariant();
 
         if (string.IsNullOrWhiteSpace(roomId))
         {
@@ -965,6 +1336,19 @@ class ServerState
             }
 
             _rooms.Remove(roomId);
+
+            foreach (var dateEntry in _slotsByDate)
+            {
+                var dictSlots = dateEntry.Value;
+                for (int i = 1; i <= SlotCount; i++)
+                {
+                    var slotId = GetSlotId(i);
+                    var key = MakeKey(roomId, slotId);
+                    dictSlots.Remove(key);
+                }
+            }
+
+            SaveRooms();
             PushRoomsChanged();
             return true;
         }
@@ -1046,10 +1430,15 @@ class ServerState
             var key = kvp.Key;
             var slot = kvp.Value;
 
-            if (slot.CurrentHolderClientId == null) continue;
+            if (string.IsNullOrEmpty(slot.CurrentHolderClientId) && string.IsNullOrEmpty(slot.CurrentHolderUserId))
+                continue;
 
             // User của holder slot hiện tại
-            var holderUserId = GetUserIdForClient(slot.CurrentHolderClientId) ?? slot.CurrentHolderClientId;
+            var holderUserId = !string.IsNullOrEmpty(slot.CurrentHolderUserId)
+                ? slot.CurrentHolderUserId
+                : (!string.IsNullOrEmpty(slot.CurrentHolderClientId)
+                    ? (GetUserIdForClient(slot.CurrentHolderClientId) ?? slot.CurrentHolderClientId)
+                    : "");
             if (!string.Equals(holderUserId, currentUserId, StringComparison.OrdinalIgnoreCase))
                 continue;
 
@@ -1077,13 +1466,23 @@ class ServerState
     // - REQUEST trùng lặp (ALREADY_HOLDER / ALREADY_QUEUED)
     // - Không cho giữ 2 phòng khác nhau cùng ca (theo clientId) trong cùng ngày
     // - Không cho đặt ca đã qua (RealTime)
-    public void HandleRequest(string clientId, string roomId, string slotId, string purpose, NetworkStream stream, TextWriter log)
+    public void HandleRequest(string clientId, string roomId, string slotId, string dateStr, string purpose, NetworkStream stream, TextWriter log)
     {
         lock (_lock)
         {
-            EnsureDateInitialized(_currentDateKey, log);
+            roomId = (roomId ?? "").Trim().ToUpperInvariant();
+            slotId = (slotId ?? "").Trim().ToUpperInvariant();
 
-            var dict = _slotsByDate[_currentDateKey];
+            if (IsRoomDisabled(roomId))
+            {
+                log.WriteLine($"[WARN] REQUEST blocked because room is DISABLED: {roomId} by {clientId}");
+                Send(stream, "INFO|ERROR|ROOM_DISABLED\n");
+                return;
+            }
+
+            EnsureDateInitialized(dateStr, log);
+
+            var dict = _slotsByDate[dateStr];
             var key = MakeKey(roomId, slotId);
 
             if (!dict.TryGetValue(key, out var slot))
@@ -1107,24 +1506,26 @@ class ServerState
 
             // 1) Chặn ca đã qua (mode RealTime đơn giản)
             var now = Now;
-            var endTime = GetSlotEndTime(_currentDateKey, slotId);
+            var endTime = GetSlotEndTime(dateStr, slotId);
             if (endTime <= now)
             {
-                log.WriteLine($"[WARN] REQUEST past slot {roomId}-{slotId} on date {_currentDateKey} by {clientId}");
+                log.WriteLine($"[WARN] REQUEST past slot {roomId}-{slotId} on date {dateStr} by {clientId}");
                 Send(stream, "INFO|ERROR|Slot already in the past\n");
                 return;
             }
 
             // 2) Chặn giữ 2 phòng khác nhau cùng ca trong cùng ngày
-            if (HasCrossRoomConflict(clientId, _currentDateKey, roomId, slotId, out var conflictedRoom))
+            if (HasCrossRoomConflict(clientId, dateStr, roomId, slotId, out var conflictedRoom))
             {
-                log.WriteLine($"[WARN] REQUEST cross-room conflict: user {userId} already holds {conflictedRoom}-{slotId} on {_currentDateKey}");
+                log.WriteLine($"[WARN] REQUEST cross-room conflict: user {userId} already holds {conflictedRoom}-{slotId} on {dateStr}");
                 Send(stream, "INFO|ERROR|User already booked another room in that time range\n");
                 return;
             }
 
             // 3) Nếu client đã là holder -> không cấp lại, chỉ báo INFO
-            if (slot.CurrentHolderClientId == clientId)
+            if (slot.CurrentHolderClientId == clientId ||
+                (!string.IsNullOrEmpty(slot.CurrentHolderUserId) &&
+                 string.Equals(slot.CurrentHolderUserId, userId, StringComparison.OrdinalIgnoreCase)))
             {
                 log.WriteLine($"[INFO] REQUEST from holder {clientId} on {roomId}-{slotId} -> already granted");
                 Send(stream, $"INFO|ALREADY_HOLDER|{roomId}|{slotId}\n");
@@ -1157,7 +1558,7 @@ class ServerState
             var queuedBookingInRoom = _bookings.FirstOrDefault(b =>
                 b.UserId == userId
                 && b.RoomId == roomId
-                && b.Date == _currentDateKey
+                && b.Date == dateStr
                 && b.Status == "QUEUED"
                 && b.IsRangeBooking);
 
@@ -1175,27 +1576,32 @@ class ServerState
             }
 
             // 5) Slot đang rảnh -> cấp quyền ngay
-            if (!slot.IsBusy && string.IsNullOrEmpty(slot.CurrentHolderClientId))
+            if (!slot.IsBusy && string.IsNullOrEmpty(slot.CurrentHolderClientId) && string.IsNullOrEmpty(slot.CurrentHolderUserId))
             {
                 slot.IsBusy = true;
                 slot.CurrentHolderClientId = clientId;
+                slot.CurrentHolderUserId = userId;
 
-                // 👉 Tạo booking mới cho lần GRANT này
+                // Tạo booking mới cho lần GRANT này
                 var booking = CreateBookingForGrant(
                     clientId,
                     roomId,
-                    _currentDateKey,
+                    dateStr,
                     slotId,   // start == end với single
                     slotId,
                     false,
-                    purpose,   // IsRangeBooking
+                    purpose,
                     log);
                 slot.CurrentBookingId = booking.BookingId;
                 // ✅ M5: push delta update cho UI slot của phòng đang xem
                 PushMyBookingsChanged(booking.UserId);
-                PushSlotUpdate(roomId, _currentDateKey, slotId, log);
-                log.WriteLine($"[GRANT] {clientId} -> {roomId}-{slotId} on date {_currentDateKey}");
+                PushSlotUpdate(roomId, dateStr, slotId, log);
+                log.WriteLine($"[GRANT] {clientId} -> {roomId}-{slotId} on date {dateStr}");
                 Send(stream, $"GRANT|{roomId}|{slotId}\n");
+
+                NotifyUser(booking.UserId, $"NOTIFY_GRANT|{roomId}|{slotId}|{dateStr}|{booking.CheckinDeadline:HH:mm}");
+
+                log.WriteLine($"[EMAIL][GRANT] SendEmailOnGrant={_settings.SendEmailOnGrant} userId={booking.UserId} bookingId={booking.BookingId}");
                 if (_settings.SendEmailOnGrant)
                 {
                     var subject = "[Room booking] Booking của bạn đã được duyệt";
@@ -1226,7 +1632,7 @@ class ServerState
                 var qb = CreateBookingQueued(
                     clientId,
                     roomId,
-                    _currentDateKey,
+                    dateStr,
                     slotId,
                     slotId,
                     false,
@@ -1239,9 +1645,9 @@ class ServerState
                 var newPos = slot.WaitingQueue.Count;
 
                 // 3) push update UI slot (không đổi)
-                PushSlotUpdate(roomId, _currentDateKey, slotId, log);
+                PushSlotUpdate(roomId, dateStr, slotId, log);
 
-                log.WriteLine($"[QUEUE] {clientId} -> {roomId}-{slotId} on date {_currentDateKey} (pos {newPos})");
+                log.WriteLine($"[QUEUE] {clientId} -> {roomId}-{slotId} on date {dateStr} (pos {newPos})");
 
                 // 4) trả về client (không đổi)
                 Send(stream, $"QUEUED|{roomId}|{slotId}|{newPos}\n");
@@ -1263,14 +1669,14 @@ class ServerState
     /// - Nếu đang trong queue -> xóa khỏi queue.
     /// - Nếu không liên quan -> báo lỗi.
     /// </summary>
-    public void HandleRelease(string clientId, string roomId, string slotId, NetworkStream? replyStream, TextWriter log)
+    public void HandleRelease(string clientId, string roomId, string slotId, string dateStr, NetworkStream? replyStream, TextWriter log)
     {
         lock (_lock)
         {
 
             var userId = GetUserIdForClient(clientId) ?? clientId;
-            EnsureDateInitialized(_currentDateKey, log);
-            var dict = _slotsByDate[_currentDateKey];
+            EnsureDateInitialized(dateStr, log);
+            var dict = _slotsByDate[dateStr];
             var key = MakeKey(roomId, slotId);
 
             if (!dict.TryGetValue(key, out var slot))
@@ -1286,11 +1692,13 @@ class ServerState
             bool isAdmin = IsAdmin(userId);
 
             // ===== CASE 1: holder hoặc admin được phép RELEASE slot =====
-            if (slot.CurrentHolderClientId == clientId || isAdmin)
+            if (isAdmin ||
+                (slot.CurrentHolderClientId == clientId) ||
+                (!string.IsNullOrEmpty(slot.CurrentHolderUserId) && string.Equals(slot.CurrentHolderUserId, userId, StringComparison.OrdinalIgnoreCase)))
             {
                 var oldHolder = slot.CurrentHolderClientId;
                 var tag = isAdmin ? "[ADMIN RELEASE]" : "[RELEASE]";
-                log.WriteLine($"{tag} {clientId} -> {roomId}-{slotId} on {_currentDateKey} (holder = {oldHolder})");
+                log.WriteLine($"{tag} {clientId} -> {roomId}-{slotId} on {dateStr} (holder = {oldHolder})");
 
                 // tìm booking hiện tại (nếu có)
                 Booking? currentBooking = null;
@@ -1337,9 +1745,10 @@ class ServerState
                 {
                     slot.IsBusy = false;
                     slot.CurrentHolderClientId = null;
+                    slot.CurrentHolderUserId = null;
                     slot.CurrentBookingId = null;
-                    PushSlotUpdate(roomId, _currentDateKey, slotId, log);
-                    log.WriteLine($"[SLOT] {roomId}-{slotId} on {_currentDateKey} -> FREE");
+                    PushSlotUpdate(roomId, dateStr, slotId, log);
+                    log.WriteLine($"[SLOT] {roomId}-{slotId} on {dateStr} -> FREE");
                 }
                 else
                 {
@@ -1351,12 +1760,14 @@ class ServerState
                     if (PromoteQueuedToApproved(queuedBookingId, log, out var booking))
                     {
                         slot.CurrentBookingId = booking.BookingId;
+                        slot.CurrentHolderUserId = booking.UserId;
                         PushHomeChanged(booking.UserId);
-                        PushSlotUpdate(roomId, _currentDateKey, slotId, log); // slot đổi holder (grant from queue)
+                        PushSlotUpdate(roomId, dateStr, slotId, log); // slot đổi holder (grant from queue)
 
-                        log.WriteLine($"[GRANT] {nextClientId} -> {roomId}-{slotId} from queue on date {_currentDateKey}");
+                        log.WriteLine($"[GRANT] {nextClientId} -> {roomId}-{slotId} from queue on date {dateStr}");
                         Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
 
+                        log.WriteLine($"[EMAIL][GRANT_FROM_QUEUE] SendEmailOnGrant={_settings.SendEmailOnGrant} userId={booking.UserId} bookingId={booking.BookingId}");
                         if (_settings.SendEmailOnGrant)
                         {
                             var subject = "[Room booking] Booking của bạn đã được GRANT từ hàng chờ";
@@ -1397,8 +1808,8 @@ class ServerState
             int removed = RemoveFromQueue(slot, clientId);
             if (removed > 0)
             {
-                PushSlotUpdate(roomId, _currentDateKey, slotId, log);
-                log.WriteLine($"[CANCEL] {clientId} removed from queue of {roomId}-{slotId} on {_currentDateKey} (entries {removed})");
+                PushSlotUpdate(roomId, dateStr, slotId, log);
+                log.WriteLine($"[CANCEL] {clientId} removed from queue of {roomId}-{slotId} on {dateStr} (entries {removed})");
                 if (replyStream != null)
                 {
                     Send(replyStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
@@ -1409,7 +1820,7 @@ class ServerState
             else
             {
                 // ===== CASE 3: không phải holder, không nằm trong queue, không phải admin =====
-                log.WriteLine($"[WARN] RELEASE from non-holder/non-queued {clientId} on {roomId}-{slotId} on {_currentDateKey}");
+                log.WriteLine($"[WARN] RELEASE from non-holder/non-queued {clientId} on {roomId}-{slotId} on {dateStr}");
                 if (replyStream != null)
                 {
                     Send(replyStream, "INFO|ERROR|Not holder or queued\n");
@@ -1674,7 +2085,10 @@ class ServerState
             // ====== NEW: nhớ user bị ảnh hưởng để push HOME/MY_BOOKINGS ======
             string? oldUserId = null;
             // 3. Nếu đang có holder → cancel booking cũ
-            if (slot.CurrentHolderClientId != null)
+            if (slot.IsBusy ||
+                slot.CurrentBookingId.HasValue ||
+                !string.IsNullOrEmpty(slot.CurrentHolderClientId) ||
+                !string.IsNullOrEmpty(slot.CurrentHolderUserId))
             {
                 // ✅ lấy user của booking cũ nếu có
                 if (slot.CurrentBookingId.HasValue)
@@ -1713,7 +2127,14 @@ class ServerState
                         PushHomeChanged(qb.UserId);
                     }
 
-                    Send(queuedStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
+                    try
+                    {
+                        Send(queuedStream, $"INFO|CANCELLED|{roomId}|{slotId}\n");
+                    }
+                    catch (Exception ex)
+                    {
+                        log.WriteLine($"[WARN] FORCE_GRANT cancel queued notify failed client={queuedClientId} bookingId={queuedBookingId}: {ex.Message}");
+                    }
                 }
 
                 PushSlotUpdate(roomId, dateKey, slotId, log);
@@ -1722,7 +2143,14 @@ class ServerState
 
             // 5. Gán holder mới + tạo booking mới
             slot.IsBusy = true;
-            slot.CurrentHolderClientId = targetUserId;
+            slot.CurrentHolderUserId = targetUserId;
+            string? targetClientId = null;
+            lock (_sessionLock)
+            {
+                if (_userToClients.TryGetValue(targetUserId, out var set) && set.Count > 0)
+                    targetClientId = set.FirstOrDefault();
+            }
+            slot.CurrentHolderClientId = targetClientId;
             var booking = CreateBookingForGrant(
                 targetUserId,
                 roomId,
@@ -1757,7 +2185,7 @@ class ServerState
                     "- Ca: {SlotStartId} - {SlotEndId}\n" +
                     "- Trạng thái: {Status}\n\n" +
                     "Vui lòng chú ý lịch dạy/học của mình.";
-                SendEmailForBooking(booking, subject, bodyTemplate, log);
+                QueueEmailForBooking(booking, subject, bodyTemplate, log);
             }
 
             if (_settings.SendNotificationToClient)
@@ -1818,12 +2246,6 @@ class ServerState
                     return false;
                 }
 
-                if (slot.IsEventLocked)
-                {
-                    error = $"Slot {roomId}-{sid} đang bị lock cho event.";
-                    return false;
-                }
-
                 // Không cho user giữ 2 phòng khác nhau cùng ca
                 if (HasCrossRoomConflict(targetUserId, dateKey, roomId, sid, out var conflictedRoom))
                 {
@@ -1839,7 +2261,13 @@ class ServerState
             // 4. Hạ booking cũ & clear queue từng slot trong range
             foreach (var (sid, slot) in slots)
             {
-                if (slot.CurrentHolderClientId != null)
+                var wasEventLocked = slot.IsEventLocked;
+                var prevEventNote = slot.EventNote;
+
+                if (slot.IsBusy ||
+                    slot.CurrentBookingId.HasValue ||
+                    !string.IsNullOrEmpty(slot.CurrentHolderClientId) ||
+                    !string.IsNullOrEmpty(slot.CurrentHolderUserId))
                 {
                     // lấy userId booking cũ (nếu có) để push HOME/MY_BOOKINGS
                     if (slot.CurrentBookingId.HasValue)
@@ -1869,14 +2297,25 @@ class ServerState
                             PushHomeChanged(qb.UserId);
                         }
                         // Thông báo: yêu cầu của bạn đã bị admin hủy
-                        Send(queuedStream, $"INFO|CANCELLED|{roomId}|{sid}\n");
+                        try
+                        {
+                            Send(queuedStream, $"INFO|CANCELLED|{roomId}|{sid}\n");
+                        }
+                        catch (Exception ex)
+                        {
+                            log.WriteLine($"[WARN] FORCE_GRANT_RANGE cancel queued notify failed client={queuedClientId} bookingId={queuedBookingId}: {ex.Message}");
+                        }
                     }
                 }
 
                 // reset trước khi gán booking mới
                 slot.IsBusy = false;
                 slot.CurrentHolderClientId = null;
+                slot.CurrentHolderUserId = null;
                 slot.CurrentBookingId = null;
+
+                slot.IsEventLocked = wasEventLocked;
+                slot.EventNote = prevEventNote;
                 PushSlotUpdate(roomId, dateKey, sid, log);  // ✅ slot đã đổi về FREE (hoặc bỏ holder/queue)
 
             }
@@ -1896,7 +2335,14 @@ class ServerState
             foreach (var (sid, slot) in slots)
             {
                 slot.IsBusy = true;
-                slot.CurrentHolderClientId = targetUserId;
+                slot.CurrentHolderUserId = targetUserId;
+                string? targetClientId = null;
+                lock (_sessionLock)
+                {
+                    if (_userToClients.TryGetValue(targetUserId, out var set) && set.Count > 0)
+                        targetClientId = set.FirstOrDefault();
+                }
+                slot.CurrentHolderClientId = targetClientId;
                 slot.CurrentBookingId = booking.BookingId;
                 PushSlotUpdate(roomId, dateKey, sid, log);  // ✅ slot đã BUSY + holder/purpose mới
 
@@ -1925,7 +2371,7 @@ class ServerState
                     "- Trạng thái: {Status}\n\n" +
                     "Vui lòng chú ý lịch dạy/học của mình.";
 
-                SendEmailForBooking(booking, subject, bodyTemplate, log);
+                QueueEmailForBooking(booking, subject, bodyTemplate, log);
             }
             if (_settings.SendNotificationToClient)
             {
@@ -1944,7 +2390,7 @@ class ServerState
         // Thực ra chỉ cần 1 slot bất kỳ trong range,
         // vì CompleteAndReleaseSlot sẽ đọc booking.IsRangeBooking
         // rồi tự giải phóng toàn bộ range.
-        return CompleteAndReleaseSlot(date, roomId, slotStartId, log, out error);
+        return ForceReleaseFromServerUi(date, roomId, slotStartId, log, out error);
     }
     // Admin check-in tại UI server, không đi qua TCP client
     public void RunNoShowSweep(DateTime now, TextWriter log)
@@ -1965,6 +2411,16 @@ class ServerState
                 anyChanged = true;
 
                 log.WriteLine($"[NO_SHOW] Booking {booking.BookingId} {booking.UserId} {booking.RoomId} {booking.SlotStartId}-{booking.SlotEndId}");
+
+                try
+                {
+                    var slotRange = booking.SlotStartId == booking.SlotEndId
+                        ? booking.SlotStartId
+                        : $"{booking.SlotStartId}-{booking.SlotEndId}";
+                    NotifyUser(booking.UserId,
+                        $"NOTIFY_NO_SHOW|{booking.RoomId}|{slotRange}|{booking.Date}|{booking.CheckinDeadline:HH:mm}");
+                }
+                catch { /* ignore */ }
 
                 // ✅ M6: push HOME + bookings list cho user bị NO_SHOW
                 if (!string.IsNullOrEmpty(booking.UserId))
@@ -2006,6 +2462,7 @@ class ServerState
                     {
                         slot.IsBusy = false;
                         slot.CurrentHolderClientId = null;
+                        slot.CurrentHolderUserId = null;
                         slot.CurrentBookingId = null;
 
                         // ✅ M5: báo client slot đổi trạng thái
@@ -2025,19 +2482,31 @@ class ServerState
             RaiseStateChanged();
     }
     public void HandleRequestRange(
-    string clientId,
-    string roomId,
-    string slotStartId,
-    string slotEndId,
-    string purpose,
-    NetworkStream stream,
-    TextWriter log)
+        string clientId,
+        string roomId,
+        string slotStartId,
+        string slotEndId,
+        string dateStr,
+        string purpose,
+        NetworkStream stream,
+        TextWriter log)
     {
         lock (_lock)
         {
             var userId = GetUserIdForClient(clientId) ?? clientId;
 
-            EnsureDateInitialized(_currentDateKey, log);
+            roomId = (roomId ?? "").Trim().ToUpperInvariant();
+            slotStartId = (slotStartId ?? "").Trim().ToUpperInvariant();
+            slotEndId = (slotEndId ?? "").Trim().ToUpperInvariant();
+
+            if (IsRoomDisabled(roomId))
+            {
+                log.WriteLine($"[WARN] REQUEST_RANGE blocked because room is DISABLED: {roomId} by {clientId}");
+                _ = SendSafe(stream, "INFO|ERROR|ROOM_DISABLED\n");
+                return;
+            }
+
+            EnsureDateInitialized(dateStr, log);
 
             int startIdx = ParseSlotIndex(slotStartId);
             int endIdx = ParseSlotIndex(slotEndId);
@@ -2047,11 +2516,11 @@ class ServerState
                 return;
             }
 
-            var dict = _slotsByDate[_currentDateKey];
+            var dict = _slotsByDate[dateStr];
             var now = Now;
 
             // 1) Chặn range hoàn toàn trong quá khứ
-            var rangeEndTime = GetSlotEndTime(_currentDateKey, slotEndId);
+            var rangeEndTime = GetSlotEndTime(dateStr, slotEndId);
             if (rangeEndTime <= now)
             {
                 _ = SendSafe(stream, "INFO|ERROR|Slot range already in the past\n");
@@ -2064,7 +2533,7 @@ class ServerState
             for (int i = 1; i <= 14; i++)
             {
                 var sid = GetSlotId(i);
-                var endTime = GetSlotEndTime(_currentDateKey, sid);
+                var endTime = GetSlotEndTime(dateStr, sid);
                 if (now < endTime)
                 {
                     currentSlotIdx = i;
@@ -2088,14 +2557,14 @@ class ServerState
             for (int idx = startIdx; idx <= endIdx; idx++)
             {
                 var sid = GetSlotId(idx);
-                if (HasCrossRoomConflict(clientId, _currentDateKey, roomId, sid, out _))
+                if (HasCrossRoomConflict(clientId, dateStr, roomId, sid, out _))
                 {
                     _ = SendSafe(stream, "INFO|ERROR|USER_SLOT_CONFLICT\n");
                     return;
                 }
             }
 
-            // 4) Gom slot state trong range
+            // 3) Gom slot state trong range
             List<(string sid, SlotState st)> slots = new();
             for (int idx = startIdx; idx <= endIdx; idx++)
             {
@@ -2112,7 +2581,7 @@ class ServerState
 
             bool isAdmin = IsAdmin(userId);
 
-            // 5) Check event lock (non-admin không được queue vào slot event)
+            // 4) Check event lock (non-admin không được queue vào slot event)
             if (!isAdmin)
             {
                 foreach (var (_, st) in slots)
@@ -2129,10 +2598,18 @@ class ServerState
             bool conflict = false;
             foreach (var (_, st) in slots)
             {
-                if (st.IsBusy && st.CurrentHolderClientId != clientId)
+                if (st.IsBusy)
                 {
-                    conflict = true;
-                    break;
+                    var holderUserId = !string.IsNullOrEmpty(st.CurrentHolderUserId)
+                        ? st.CurrentHolderUserId
+                        : (!string.IsNullOrEmpty(st.CurrentHolderClientId)
+                            ? (GetUserIdForClient(st.CurrentHolderClientId) ?? st.CurrentHolderClientId)
+                            : "");
+                    if (!string.Equals(holderUserId, userId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        conflict = true;
+                        break;
+                    }
                 }
             }
 
@@ -2164,24 +2641,24 @@ class ServerState
                 }
 
                 if (alreadyQueued)
-                {
+            {
                     log.WriteLine($"[INFO] REQUEST_RANGE duplicate from {clientId} for {rangeKey} -> already queued pos={pos}");
                     _ = SendSafe(stream, $"RANGE_WAITING|{pos}\n");
-                    return;
-                }
+                return;
+            }
 
                 // ====== Check booking QUEUED khác có overlap với range này không ======
                 var queuedBookingsInRoom = _bookings.Where(b =>
                     b.UserId == userId
                     && b.RoomId == roomId
-                    && b.Date == _currentDateKey
+                    && b.Date == dateStr
                     && b.Status == "QUEUED").ToList();
 
                 foreach (var qb in queuedBookingsInRoom)
                 {
                     int qStartIdx = ParseSlotIndex(qb.SlotStartId);
                     int qEndIdx = ParseSlotIndex(qb.SlotEndId);
-
+                
                     // Kiểm tra overlap: [startIdx, endIdx] và [qStartIdx, qEndIdx]
                     if (!(endIdx < qStartIdx || startIdx > qEndIdx))
                     {
@@ -2191,7 +2668,7 @@ class ServerState
                     }
                 }
 
-                var qb2 = CreateBookingQueued(clientId, roomId, _currentDateKey, slotStartId, slotEndId, true, purpose, log);
+                var qb2 = CreateBookingQueued(clientId, roomId, dateStr, slotStartId, slotEndId, true, purpose, log);
                 var qUserId = GetUserIdForClient(clientId) ?? clientId;
                 q.Enqueue((clientId, qUserId, stream, purpose, qb2.BookingId));
                 int position = q.Count;
@@ -2206,7 +2683,7 @@ class ServerState
             }
 
             // 7) Không conflict => grant luôn
-            GrantRange(clientId, roomId, slotStartId, slotEndId, _currentDateKey, stream, purpose, log);
+            GrantRange(clientId, roomId, slotStartId, slotEndId, dateStr, stream, purpose, log);
         }
     }
 
@@ -2263,6 +2740,10 @@ class ServerState
         booking.CheckinDeadline = start.AddMinutes(15);
 
         log.WriteLine($"[BOOKING] PROMOTE {booking.BookingId} -> APPROVED");
+        
+        // Gửi notification cho user
+        PushHomeChanged(booking.UserId);
+        
         return true;
     }
 
@@ -2338,15 +2819,14 @@ class ServerState
         catch { }
     }
 
-    public void HandleReleaseRange(string clientId, string roomId, string slotStartId, string slotEndId, NetworkStream replyStream, TextWriter log)
+    public void HandleReleaseRange(string clientId, string roomId, string slotStartId, string slotEndId, string dateStr, NetworkStream replyStream, TextWriter log)
     {
-        var dateKey = _currentDateKey;
-
         lock (_lock)
         {
             var userId = GetUserIdForClient(clientId) ?? clientId;
+            bool isAdmin = IsAdmin(userId);
 
-            if (!_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
+            if (!_slotsByDate.TryGetValue(dateStr, out var slotsForDate))
             {
                 _ = SendSafe(replyStream, "INFO|ERROR|No slots for current date\n");
                 return;
@@ -2364,7 +2844,7 @@ class ServerState
             var booking = _bookings.FirstOrDefault(b =>
                b.UserId == userId
             && b.RoomId == roomId
-            && b.Date == dateKey
+            && b.Date == dateStr
             && b.IsRangeBooking
             && b.SlotStartId == slotStartId
             && b.SlotEndId == slotEndId
@@ -2373,6 +2853,14 @@ class ServerState
             if (booking == null)
             {
                 _ = SendSafe(replyStream, "INFO|ERROR|NO_RANGE_BOOKING\n");
+                return;
+            }
+
+            // Nếu đang IN_USE mà không phải admin -> từ chối
+            if (!isAdmin && string.Equals(booking.Status, "IN_USE", StringComparison.OrdinalIgnoreCase))
+            {
+                log.WriteLine($"[WARN] User {clientId} cannot RELEASE_RANGE IN_USE booking {booking.BookingId}");
+                _ = SendSafe(replyStream, "INFO|ERROR|CANNOT_RELEASE_IN_USE\n");
                 return;
             }
 
@@ -2430,13 +2918,14 @@ class ServerState
                 {
                     slot.IsBusy = false;
                     slot.CurrentHolderClientId = null;
+                    slot.CurrentHolderUserId = null;
                     slot.CurrentBookingId = null;
 
                     log.WriteLine($"[SLOT_FREE] {roomId}-{sid}");
 
                     // Tự động cấp cho queue SINGLE
-                    GrantNextFromQueue(dateKey, roomId, sid, slot, log);
-                    PushSlotUpdate(roomId, dateKey, sid, log); // ✅ M5: push trạng thái cuối cùng
+                    GrantNextFromQueue(dateStr, roomId, sid, slot, log);
+                    PushSlotUpdate(roomId, dateStr, sid, log); // ✅ M5: push trạng thái cuối cùng
 
                 }
             }
@@ -2455,7 +2944,7 @@ class ServerState
 
                     if (PromoteQueuedToApproved(queuedBookingId, log, out var promotedBooking))
                     {
-                        // assign booking to all slots in range
+                        // 1) Assign booking to all slots in range (no network writes yet)
                         for (int idx = startIdx; idx <= endIdx; idx++)
                         {
                             var sid = GetSlotId(idx);
@@ -2464,13 +2953,20 @@ class ServerState
 
                             slot.IsBusy = true;
                             slot.CurrentHolderClientId = nextClient;
+                            slot.CurrentHolderUserId = promotedBooking.UserId;
                             slot.CurrentBookingId = promotedBooking.BookingId;
-                            PushSlotUpdate(roomId, dateKey, sid, log);
-                            log.WriteLine($"[GRANT_RANGE_SLOT] {nextClient} -> {roomId}-{sid} from queue");
                         }
 
-                        // notify client
-                        _ = SendSafe(nextStream, $"GRANTED_RANGE|{promotedBooking.BookingId}|{roomId}|{slotStartId}|{slotEndId}\n");
+                        // 2) Notify client ASAP (before SLOT_UPDATE spam)
+                        Send(nextStream, $"GRANTED_RANGE|{promotedBooking.BookingId}|{roomId}|{slotStartId}|{slotEndId}\n");
+
+                        // 3) Now push SLOT_UPDATE per slot
+                        for (int idx = startIdx; idx <= endIdx; idx++)
+                        {
+                            var sid = GetSlotId(idx);
+                            PushSlotUpdate(roomId, dateStr, sid, log);
+                            log.WriteLine($"[GRANT_RANGE_SLOT] {nextClient} -> {roomId}-{sid} from queue");
+                        }
 
                         if (_settings.SendEmailOnGrant)
                         {
@@ -2539,17 +3035,26 @@ class ServerState
 
             _users.TryGetValue(booking.UserId, out var user);
 
+            var timeRange = GetSlotTimeRange(booking.SlotStartId, booking.SlotEndId);
+
             return new BookingView
             {
                 BookingId = booking.BookingId,
                 UserId = booking.UserId,
                 FullName = user?.FullName ?? "",
                 UserType = user?.UserType ?? "",
+                Email = user?.Email ?? "",
+                Phone = user?.Phone ?? "",
                 RoomId = booking.RoomId,
                 Date = booking.Date,
                 SlotStartId = booking.SlotStartId,
                 SlotEndId = booking.SlotEndId,
+                TimeRange = timeRange,
+                IsRange = booking.IsRangeBooking,
+                Purpose = booking.Purpose ?? "",
                 Status = booking.Status,
+                CheckinDeadline = booking.CheckinDeadline,
+                CheckinTime = booking.CheckinTime,
                 CreatedAt = booking.CreatedAt,
                 UpdatedAt = booking.UpdatedAt
             };
@@ -2563,7 +3068,7 @@ class ServerState
         lock (_lock)
         {
             return GetBookingViews()
-                .Where(b => b.UserId == userId && b.Date == todayKey)
+                .Where(b => string.Equals(b.UserId, userId, StringComparison.OrdinalIgnoreCase) && b.Date == todayKey)
                 .OrderBy(b => b.TimeRange)
                 .ToList();
         }
@@ -2638,6 +3143,28 @@ class ServerState
             }
             log.WriteLine($"[CHECKIN] Manual check-in booking {booking.BookingId} {booking.UserId} {roomId}-{slotId} on {dateKey} at {now:HH:mm}");
             PushMyBookingsChanged(booking.UserId);
+            
+            // Gửi notification cho user
+            PushHomeChanged(booking.UserId);
+
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var subject = "[Room booking] Booking đã được CHECK-IN";
+                var bodyTemplate =
+                    "Chào {FullName},\n\n" +
+                    "Booking của bạn đã được CHECK-IN.\n" +
+                    "- Phòng: {RoomId}\n" +
+                    "- Ngày: {Date}\n" +
+                    "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                    "- Trạng thái: {Status}\n";
+                QueueEmailForBooking(booking, subject, bodyTemplate, log);
+            }
+
+            var slotRange = booking.SlotStartId == booking.SlotEndId
+                ? booking.SlotStartId
+                : $"{booking.SlotStartId}-{booking.SlotEndId}";
+            NotifyUser(booking.UserId, $"NOTIFY_CHECKIN|{roomId}|{slotRange}|{dateKey}|{now:HH:mm}");
+            
             return true;
         }
     }
@@ -2699,10 +3226,13 @@ class ServerState
             if (PromoteQueuedToApproved(queuedBookingId, log, out var booking))
             {
                 slot.CurrentBookingId = booking.BookingId;
+                slot.CurrentHolderUserId = booking.UserId;
                 PushSlotUpdate(roomId, dateKey, slotId, log); // ✅ M5
 
                 log.WriteLine($"[GRANT] {nextClientId} -> {roomId}-{slotId} from queue on date {dateKey}");
                 Send(nextStream, $"GRANT|{roomId}|{slotId}\n");
+
+                NotifyUser(booking.UserId, $"NOTIFY_GRANT|{roomId}|{slotId}|{dateKey}|{booking.CheckinDeadline:HH:mm}");
 
                 if (_settings.SendEmailOnGrant)
                 {
@@ -2737,6 +3267,7 @@ class ServerState
                 log.WriteLine($"[WARN] queued booking {queuedBookingId} could not be promoted");
                 slot.IsBusy = false;
                 slot.CurrentHolderClientId = null;
+                slot.CurrentHolderUserId = null;
                 slot.CurrentBookingId = null;
                 PushSlotUpdate(roomId, dateKey, slotId, log);
                 continue;
@@ -2843,6 +3374,30 @@ class ServerState
             booking.Status = newStatus;
             booking.UpdatedAt = Now;
             PushMyBookingsChanged(booking.UserId);
+            
+            // Gửi notification cho user khi COMPLETED
+            if (newStatus == "COMPLETED")
+            {
+                PushHomeChanged(booking.UserId);
+
+                if (_settings.SendEmailOnForceGrantRelease)
+                {
+                    var subject = "[Room booking] Booking đã COMPLETED";
+                    var bodyTemplate =
+                        "Chào {FullName},\n\n" +
+                        "Booking của bạn đã được đánh dấu COMPLETED.\n" +
+                        "- Phòng: {RoomId}\n" +
+                        "- Ngày: {Date}\n" +
+                        "- Ca: {SlotStartId} - {SlotEndId}\n" +
+                        "- Trạng thái: {Status}\n";
+                    QueueEmailForBooking(booking, subject, bodyTemplate, log);
+                }
+
+                var slotRange = booking.SlotStartId == booking.SlotEndId
+                    ? booking.SlotStartId
+                    : $"{booking.SlotStartId}-{booking.SlotEndId}";
+                NotifyUser(booking.UserId, $"NOTIFY_COMPLETE|{roomId}|{slotRange}|{dateKey}|{Now:HH:mm}");
+            }
 
             // =========================
             // 1) Nếu là booking RANGE
@@ -2871,6 +3426,7 @@ class ServerState
                     {
                         slotRange.IsBusy = false;
                         slotRange.CurrentHolderClientId = null;
+                        slotRange.CurrentHolderUserId = null;
                         slotRange.CurrentBookingId = null;
                         // ✅ M5: push FREE trước
                         PushSlotUpdate(roomId, dateKey, sidRange, log);
@@ -2887,6 +3443,7 @@ class ServerState
                 // =========================
                 slot.IsBusy = false;
                 slot.CurrentHolderClientId = null;
+                slot.CurrentHolderUserId = null;
                 slot.CurrentBookingId = null;
                 // ✅ M5: push FREE trước
                 PushSlotUpdate(roomId, dateKey, slotId, log);
@@ -2947,9 +3504,29 @@ class ServerState
                     bookingIdToNotify = slot.CurrentBookingId.Value;
 
                     var oldBooking = _bookings.FirstOrDefault(b => b.BookingId == bookingIdToNotify.Value);
-                    if (oldBooking != null) userIdToPush = oldBooking.UserId;
+                    if (oldBooking != null)
+                    {
+                        userIdToPush = oldBooking.UserId;
+
+                        if (!string.Equals(oldBooking.Status, "APPROVED", StringComparison.OrdinalIgnoreCase) &&
+                            !string.Equals(oldBooking.Status, "IN_USE", StringComparison.OrdinalIgnoreCase))
+                        {
+                            error = $"Booking đang ở trạng thái {oldBooking.Status}, không thể FORCE RELEASE.";
+                            bookingIdToNotify = null;
+                            userIdToPush = null;
+                        }
+                    }
                 }
             }
+        }
+
+        if (!string.IsNullOrEmpty(error))
+            return false;
+
+        if (!bookingIdToNotify.HasValue)
+        {
+            error = "Slot hiện không có booking.";
+            return false;
         }
 
         // 2) Gọi lại logic cũ: COMPLETE & RELEASE
@@ -2996,7 +3573,7 @@ class ServerState
                         "- Trạng thái: {Status}\n\n" +
                         "Nếu có thắc mắc, vui lòng liên hệ quản trị.";
 
-                    SendEmailForBooking(booking, subject, bodyTemplate, log);
+                    QueueEmailForBooking(booking, subject, bodyTemplate, log);
                 }
 
                 // Notify client (hiện tại chỉ log, sau này có thể gửi thật)
@@ -3027,15 +3604,7 @@ class ServerState
     }
     private void PushHomeChanged(string userId)
     {
-        List<string> targets;
-        lock (_subLock)
-        {
-            if (!_subHome.TryGetValue(userId, out var set) || set.Count == 0) return;
-            targets = set.ToList();
-        }
-
-        foreach (var cid in targets)
-            SendToClient(cid, $"PUSH_HOME_DATA_CHANGED|{userId}\n");
+        SendToUser(userId, $"PUSH_HOME_DATA_CHANGED|{userId}\n");
     }
 
 
@@ -3068,7 +3637,13 @@ class ServerState
 
                 if (slotState != null)
                 {
-                    if (slotState.IsBusy)
+                    // Kiểm tra IsEventLocked trước (fixed schedule)
+                    if (slotState.IsEventLocked)
+                    {
+                        status = "LOCKED";
+                        purpose = slotState.EventNote ?? "Fixed Schedule";
+                    }
+                    else if (slotState.IsBusy)
                     {
                         status = "BUSY";
 
@@ -3226,6 +3801,7 @@ class ServerState
                 {
                     IsBusy = slot.IsBusy,
                     CurrentHolderClientId = slot.CurrentHolderClientId,
+                    CurrentHolderUserId = slot.CurrentHolderUserId,
                     CurrentBookingId = slot.CurrentBookingId,
                     IsEventLocked = slot.IsEventLocked,
                     EventNote = slot.EventNote
@@ -3242,6 +3818,31 @@ class ServerState
         foreach (var kvp in _users)
         {
             snapshot.Users[kvp.Key] = kvp.Value;
+        }
+
+        // ✅ Rooms
+        foreach (var kvp in _rooms)
+        {
+            snapshot.Rooms[kvp.Key] = kvp.Value;
+        }
+
+        // ✅ FixedSessions
+        snapshot.FixedSessions.AddRange(_fixedSessions);
+
+        lock (_homeNotiLock)
+        {
+            foreach (var kvp in _homeNotifications)
+            {
+                snapshot.HomeNotifications[kvp.Key] = kvp.Value.ToList();
+            }
+        }
+
+        lock (_notifyLock)
+        {
+            foreach (var kvp in _pendingNotifications)
+            {
+                snapshot.PendingNotifications[kvp.Key] = kvp.Value.ToList();
+            }
         }
 
         return snapshot;
@@ -3305,6 +3906,7 @@ class ServerState
                         {
                             IsBusy = snap.IsBusy,
                             CurrentHolderClientId = snap.CurrentHolderClientId,
+                            CurrentHolderUserId = snap.CurrentHolderUserId,
                             CurrentBookingId = snap.CurrentBookingId,
                             IsEventLocked = snap.IsEventLocked,
                             EventNote = snap.EventNote
@@ -3319,6 +3921,22 @@ class ServerState
                 if (snapshot.Bookings != null)
                     _bookings.AddRange(snapshot.Bookings);
 
+                foreach (var dateEntry in _slotsByDate)
+                {
+                    foreach (var slot in dateEntry.Value.Values)
+                    {
+                        if (!string.IsNullOrEmpty(slot.CurrentHolderUserId))
+                            continue;
+
+                        if (!slot.CurrentBookingId.HasValue)
+                            continue;
+
+                        var b = _bookings.FirstOrDefault(x => x.BookingId == slot.CurrentBookingId.Value);
+                        if (b != null && !string.IsNullOrEmpty(b.UserId))
+                            slot.CurrentHolderUserId = b.UserId;
+                    }
+                }
+
                 // Khôi phục users
                 _users.Clear();
                 if (snapshot.Users != null)
@@ -3329,7 +3947,86 @@ class ServerState
                     }
                 }
 
-                // Lưu ý: _rooms vẫn giữ nguyên từ InitDemoData (danh sách phòng demo)
+                // ✅ Khôi phục rooms
+                _rooms.Clear();
+                if (snapshot.Rooms != null && snapshot.Rooms.Count > 0)
+                {
+                    foreach (var kvp in snapshot.Rooms)
+                    {
+                        if (kvp.Value != null)
+                        {
+                            kvp.Value.RoomId = (kvp.Value.RoomId ?? "").Trim().ToUpperInvariant();
+                            kvp.Value.Status = NormalizeRoomStatus(kvp.Value.Status);
+                        }
+                        _rooms[kvp.Key] = kvp.Value;
+                    }
+                    log.WriteLine($"[SNAPSHOT] Restored {_rooms.Count} rooms");
+                }
+                else
+                {
+                    log.WriteLine("[SNAPSHOT] No rooms in snapshot (rooms list empty)");
+                }
+
+                // ✅ Khôi phục fixed sessions
+                _fixedSessions.Clear();
+                _fixedSessionsByDate.Clear();
+                _fixedSessionIdsByUser.Clear();
+                
+                if (snapshot.FixedSessions != null)
+                {
+                    _fixedSessions.AddRange(snapshot.FixedSessions);
+                    
+                    // Rebuild indexes
+                    foreach (var session in _fixedSessions)
+                    {
+                        // Index by date
+                        foreach (var dateKey in session.LockedDates)
+                        {
+                            if (!_fixedSessionsByDate.ContainsKey(dateKey))
+                                _fixedSessionsByDate[dateKey] = new List<FixedSession>();
+                            _fixedSessionsByDate[dateKey].Add(session);
+                        }
+                        
+                        // Index by user
+                        var allUserIds = new List<string>();
+                        if (!string.IsNullOrWhiteSpace(session.LecturerUserId))
+                            allUserIds.Add(session.LecturerUserId);
+                        allUserIds.AddRange(session.StudentUserIds);
+                        
+                        foreach (var userId in allUserIds)
+                        {
+                            if (!_fixedSessionIdsByUser.ContainsKey(userId))
+                                _fixedSessionIdsByUser[userId] = new HashSet<Guid>();
+                            _fixedSessionIdsByUser[userId].Add(session.SessionId);
+                        }
+                    }
+                    
+                    log.WriteLine($"[SNAPSHOT] Restored {_fixedSessions.Count} fixed sessions");
+                }
+
+                lock (_homeNotiLock)
+                {
+                    _homeNotifications.Clear();
+                    if (snapshot.HomeNotifications != null)
+                    {
+                        foreach (var kvp in snapshot.HomeNotifications)
+                        {
+                            _homeNotifications[kvp.Key] = new Queue<string>(kvp.Value ?? new List<string>());
+                        }
+                    }
+                }
+
+                lock (_notifyLock)
+                {
+                    _pendingNotifications.Clear();
+                    if (snapshot.PendingNotifications != null)
+                    {
+                        foreach (var kvp in snapshot.PendingNotifications)
+                        {
+                            _pendingNotifications[kvp.Key] = new Queue<string>(kvp.Value ?? new List<string>());
+                        }
+                    }
+                }
             }
 
             log.WriteLine($"[SNAPSHOT] Loaded snapshot from {filePath}");
@@ -3367,6 +4064,7 @@ class ServerState
             purpose,
             log);
 
+        // 1) Update state for all slots first (no network writes yet)
         for (int idx = startIdx; idx <= endIdx; idx++)
         {
             string sid = GetSlotId(idx);
@@ -3375,16 +4073,21 @@ class ServerState
 
             slot.IsBusy = true;
             slot.CurrentHolderClientId = clientId;
+            slot.CurrentHolderUserId = booking.UserId;
             slot.CurrentBookingId = booking.BookingId;
-
-            PushSlotUpdate(roomId, dateKey, sid, log);
-
-
-            log.WriteLine($"[GRANT_RANGE_SLOT] {clientId} -> {roomId}-{sid}");
         }
 
+        // 2) Send GRANTED_RANGE to requester ASAP (before SLOT_UPDATE spam)
         log.WriteLine($"[GRANT_RANGE] {clientId} -> {roomId}-{slotStartId}-{slotEndId}");
-        _ = SendSafe(stream, $"GRANTED_RANGE|{booking.BookingId}|{roomId}|{slotStartId}|{slotEndId}\n");
+        Send(stream, $"GRANTED_RANGE|{booking.BookingId}|{roomId}|{slotStartId}|{slotEndId}\n");
+
+        // 3) Now push SLOT_UPDATE per slot
+        for (int idx = startIdx; idx <= endIdx; idx++)
+        {
+            string sid = GetSlotId(idx);
+            PushSlotUpdate(roomId, dateKey, sid, log);
+            log.WriteLine($"[GRANT_RANGE_SLOT] {clientId} -> {roomId}-{sid}");
+        }
 
         if (_settings.SendEmailOnGrant)
         {
@@ -3477,6 +4180,11 @@ class ServerState
     public bool UpdateUser(UserInfo updatedUser, out string error)
     {
         error = "";
+
+        updatedUser.UserId = (updatedUser.UserId ?? "").Trim().ToUpperInvariant();
+        updatedUser.StudentId = (updatedUser.StudentId ?? "").Trim().ToUpperInvariant();
+        updatedUser.LecturerId = (updatedUser.LecturerId ?? "").Trim().ToUpperInvariant();
+        updatedUser.Class = (updatedUser.Class ?? "").Trim().ToUpperInvariant();
 
         if (string.IsNullOrWhiteSpace(updatedUser.UserId))
         {
@@ -3715,31 +4423,98 @@ class ServerState
         SendEmailSafe(user.Email, subject, body, log);
     }
 
-    private void NotifyClientBookingChanged(string userId, string payload, TextWriter log)
+    private void QueueEmailToUser(string userId, string subject, string body, TextWriter log)
     {
-        List<string> targets;
-
-        lock (_subLock)
+        string? to;
+        lock (_lock)
         {
-            if (!_subMyBookings.TryGetValue(userId, out var set) || set.Count == 0)
+            if (!_users.TryGetValue(userId, out var user) || string.IsNullOrWhiteSpace(user.Email))
             {
-                log.WriteLine($"[PUSH] skip MY_BOOKINGS_CHANGED user={userId} (no subscribers)");
+                log.WriteLine($"[EMAIL] Skip: user {userId} not found or email empty");
+                return;
+            }
+            to = user.Email;
+        }
+
+        _ = Task.Run(() => SendEmailSafe(to!, subject, body, log));
+    }
+
+    private void QueueEmailForBooking(Booking booking, string subject, string bodyTemplate, TextWriter log)
+    {
+        string? to;
+        string fullName;
+        string roomId;
+        string date;
+        string slotStartId;
+        string slotEndId;
+        string status;
+
+        lock (_lock)
+        {
+            if (!_users.TryGetValue(booking.UserId, out var user) || string.IsNullOrWhiteSpace(user.Email))
+            {
+                log.WriteLine($"[EMAIL] Skip: user {booking.UserId} not found or email empty");
                 return;
             }
 
-            targets = set.ToList();
+            to = user.Email;
+            fullName = user.FullName;
+            roomId = booking.RoomId;
+            date = booking.Date;
+            slotStartId = booking.SlotStartId;
+            slotEndId = booking.SlotEndId;
+            status = booking.Status;
+        }
+
+        var body = bodyTemplate
+            .Replace("{FullName}", fullName)
+            .Replace("{RoomId}", roomId)
+            .Replace("{Date}", date)
+            .Replace("{SlotStartId}", slotStartId)
+            .Replace("{SlotEndId}", slotEndId)
+            .Replace("{Status}", status);
+
+        _ = Task.Run(() => SendEmailSafe(to!, subject, body, log));
+    }
+
+    private void NotifyClientBookingChanged(string userId, string payload, TextWriter log)
+    {
+        if (!string.IsNullOrWhiteSpace(payload))
+        {
+            var line = payload.EndsWith("\n", StringComparison.Ordinal) ? payload : (payload + "\n");
+            var sentPayload = SendToUser(userId, line);
+            log.WriteLine($"[PUSH] BOOKING_EVENT user={userId}, sent={sentPayload}, payload={payload}");
+
+            try
+            {
+                var p = payload.Split('|');
+                if (p.Length >= 5)
+                {
+                    var kind = p[0];
+                    var roomId = p[2];
+                    var slotRange = p[3] == p[4] ? p[3] : $"{p[3]}-{p[4]}";
+
+                    if (string.Equals(kind, "FORCE_GRANT", StringComparison.OrdinalIgnoreCase))
+                        AddHomeNotification(userId, $"🎉 Admin đã FORCE GRANT cho bạn: {roomId} slots {slotRange}");
+                    else if (string.Equals(kind, "FORCE_RELEASE", StringComparison.OrdinalIgnoreCase))
+                        AddHomeNotification(userId, $"⚠️ Admin đã FORCE RELEASE booking của bạn: {roomId} slots {slotRange}");
+                    else if (string.Equals(kind, "GRANTED_FROM_QUEUE", StringComparison.OrdinalIgnoreCase))
+                        AddHomeNotification(userId, $"🎉 Booking của bạn đã được GRANT từ hàng chờ: {roomId} slots {slotRange}");
+                    else if (string.Equals(kind, "GRANTED_RANGE", StringComparison.OrdinalIgnoreCase))
+                        AddHomeNotification(userId, $"🎉 RANGE booking của bạn đã được GRANT: {roomId} slots {slotRange}");
+                    else if (string.Equals(kind, "GRANTED", StringComparison.OrdinalIgnoreCase))
+                        AddHomeNotification(userId, $"🎉 Booking của bạn đã được GRANT: {roomId} slots {slotRange}");
+                }
+            }
+            catch (Exception ex)
+            {
+                log.WriteLine($"[WARN] AddHomeNotification failed user={userId} payload={payload}: {ex.Message}");
+            }
         }
 
         var minimal = $"PUSH_MY_BOOKINGS_CHANGED|{userId}\n";
-
-        int sent = 0;
-        foreach (var clientId in targets)
-        {
-            if (SendToClient(clientId, minimal))
-                sent++;
-        }
-
-        log.WriteLine($"[PUSH] MY_BOOKINGS_CHANGED user={userId}, subs={targets.Count}, sent={sent}");
+        var sent = SendToUser(userId, minimal);
+        log.WriteLine($"[PUSH] MY_BOOKINGS_CHANGED user={userId}, sent={sent}");
     }
 
     public int BroadcastNow(TextWriter? log = null)
@@ -3771,6 +4546,47 @@ class ServerState
 
 
     // ở cuối class ServerState
+        // ===== PROTOCOL: PUSH_MY_FIXED_SCHEDULE =====
+        // Gửi toàn bộ lịch cố định (fixed schedule) của user về client
+        // Dữ liệu gửi dạng: { "type": "PUSH_MY_FIXED_SCHEDULE", "data": [ { ... } ] }
+        public void PushMyFixedSchedule(string userId)
+        {
+            var fixedList = GetUserFixedSchedule(userId);
+            var arr = fixedList.Select(f => new {
+                sessionId = f.SessionId,
+                subjectCode = f.SubjectCode,
+                subjectName = f.SubjectName,
+                @class = f.Class,
+                lecturerUserId = f.LecturerUserId,
+                roomId = f.RoomId,
+                dayOfWeek = f.DayOfWeek,
+                slotStartId = f.SlotStartId,
+                slotEndId = f.SlotEndId,
+                dateFrom = f.DateFrom,
+                dateTo = f.DateTo,
+                note = f.Note
+            }).ToList();
+            var msg = new {
+                type = "PUSH_MY_FIXED_SCHEDULE",
+                data = arr
+            };
+            var json = JsonSerializer.Serialize(msg) + "\n";
+            Console.WriteLine($"[PUSH_MY_FIXED_SCHEDULE] Sending to {userId}: {arr.Count} items");
+            SendToUser(userId, json);
+        }
+
+        // Lấy danh sách FixedSession mà user là participant
+        public List<FixedSession> GetUserFixedSchedule(string userId)
+        {
+            lock (_lock)
+            {
+                if (_fixedSessionIdsByUser.TryGetValue(userId, out var sessionIds))
+                {
+                    return _fixedSessions.Where(s => sessionIds.Contains(s.SessionId)).ToList();
+                }
+                return new List<FixedSession>();
+            }
+        }
     // public class SlotTimeConfigRow
     // {
     //     public string SlotId { get; set; } = "";
@@ -3799,19 +4615,101 @@ class ServerState
 
         lock (_lock)
         {
-            var allViews = GetBookingViews(); // đã include TimeRange chuẩn
-
-            var query = allViews
-                .Where(b =>
-                {
-                    var d = DateTime.Parse(b.Date); // b.Date = "yyyy-MM-dd"
-                    return b.UserId == userId && d >= from && d <= to;
+            // 1. Lấy booking thường
+            var allViews = GetBookingViews();
+            var normalBookings = allViews
+                .Where(b => {
+                    var d = DateTime.Parse(b.Date);
+                    return string.Equals(b.UserId, userId, StringComparison.OrdinalIgnoreCase) && d >= from && d <= to;
                 })
-                .OrderBy(b => DateTime.Parse(b.Date))
-                .ThenBy(b => b.SlotStartId);
+                .ToList();
 
-            return query.ToList();
+            // 2. Lấy fixed sessions mà user là participant
+            var virtualBookings = new List<BookingView>();
+            if (_fixedSessionIdsByUser.TryGetValue(userId, out var sessionIds))
+            {
+                foreach (var sid in sessionIds)
+                {
+                    var fs = _fixedSessions.FirstOrDefault(x => x.SessionId == sid);
+                    if (fs == null) continue;
+                    if (!DateTime.TryParse(fs.DateFrom, out var dateFrom) || !DateTime.TryParse(fs.DateTo, out var dateTo))
+                        continue;
+                    for (var d = dateFrom; d <= dateTo; d = d.AddDays(1))
+                    {
+                        // Nếu DayOfWeek rỗng (fixed session cho ngày cụ thể), bỏ qua filter DayOfWeek
+                        if (!string.IsNullOrWhiteSpace(fs.DayOfWeek) && 
+                            !string.Equals(d.DayOfWeek.ToString(), fs.DayOfWeek, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (d < from || d > to) continue;
+                        var dateStr = d.ToString("yyyy-MM-dd");
+                        // Nếu user đã có booking thường trùng ngày/phòng/slot thì bỏ qua fixed session này
+                        bool hasNormal = normalBookings.Any(b => b.Date == dateStr && b.RoomId == fs.RoomId &&
+                            SlotRangeOverlap(b.SlotStartId, b.SlotEndId, fs.SlotStartId, fs.SlotEndId));
+                        if (hasNormal) continue;
+                        // Tạo BookingView ảo
+                        _users.TryGetValue(userId, out var u);
+                        var bv = new BookingView
+                        {
+                            BookingId = fs.SessionId, // dùng SessionId làm BookingId ảo
+                            UserId = userId,
+                            FullName = u?.FullName ?? userId,
+                            UserType = u?.UserType ?? "",
+                            Email = u?.Email ?? "",
+                            Phone = u?.Phone ?? "",
+                            RoomId = fs.RoomId,
+                            Date = dateStr,
+                            SlotStartId = fs.SlotStartId,
+                            SlotEndId = fs.SlotEndId,
+                            TimeRange = GetSlotTimeRange(fs.SlotStartId, fs.SlotEndId),
+                            IsRange = fs.SlotStartId != fs.SlotEndId,
+                            Purpose = fs.SubjectName,
+                            Status = "FIXED",
+                            CreatedAt = fs.CreatedAt,
+                            UpdatedAt = fs.UpdatedAt,
+                            CheckinDeadline = null,
+                            CheckinTime = null
+                        };
+                        virtualBookings.Add(bv);
+                    }
+                }
+            }
+
+            // 3. Merge và sort
+            var result = normalBookings.Concat(virtualBookings)
+                .OrderBy(r => DateTime.Parse(r.Date))
+                .ThenBy(r => ParseSlotIndexSafe(r.SlotStartId))
+                .ToList();
+            return result;
         }
+    }
+
+    // Helper: kiểm tra 2 range slot có overlap không
+    private bool SlotRangeOverlap(string s1, string e1, string s2, string e2)
+    {
+        int a1 = ParseSlotIndexSafe(s1), a2 = ParseSlotIndexSafe(e1);
+        int b1 = ParseSlotIndexSafe(s2), b2 = ParseSlotIndexSafe(e2);
+        return Math.Max(a1, b1) <= Math.Min(a2, b2);
+    }
+
+    // Helper: lấy time range từ slot id
+    private string GetSlotTimeRange(string slotStartId, string slotEndId)
+    {
+        if (_settings == null) return "";
+        var slots = _settings.SlotTimes;
+        int sIdx = ParseSlotIndexSafe(slotStartId);
+        int eIdx = ParseSlotIndexSafe(slotEndId);
+        var s = slots.FirstOrDefault(x => ParseSlotIndexSafe(x.SlotId) == sIdx);
+        var e = slots.FirstOrDefault(x => ParseSlotIndexSafe(x.SlotId) == eIdx);
+        if (s == null || e == null) return "";
+        return s.Start + "-" + e.End;
+    }
+
+    private int ParseSlotIndexSafe(string? slotId)
+    {
+        if (string.IsNullOrWhiteSpace(slotId)) return 0;
+        if (slotId.StartsWith("S") && int.TryParse(slotId.Substring(1), out int idx))
+            return idx;
+        return 0;
     }
     public void MapClientToUser(string clientId, string userId)
     {
@@ -3838,32 +4736,29 @@ class ServerState
     }
     private void RaiseStateChanged()
     {
-        StateChanged?.Invoke();
+        Console.WriteLine($"[STATE_CHANGED] RaiseStateChanged called at {DateTime.Now:HH:mm:ss.fff}");
+        var handler = StateChanged;
+        if (handler == null)
+            return;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                handler.Invoke();
+                Console.WriteLine($"[STATE_CHANGED] StateChanged event invoked at {DateTime.Now:HH:mm:ss.fff}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[STATE_CHANGED][ERROR] {ex.Message}");
+            }
+        });
     }
     public int PushMyBookingsChanged(string userId, TextWriter? log = null)
     {
         var msg = $"PUSH_MY_BOOKINGS_CHANGED|{userId}\n"; // ✅ có \n
-
-        List<string> clientIds;
-        lock (_subLock)
-        {
-            if (!_subMyBookings.TryGetValue(userId, out var set) || set.Count == 0)
-                return 0;
-
-            clientIds = set.ToList(); // ✅ copy ra để tránh collection modified
-        }
-
-        int sent = 0;
-        foreach (var clientId in clientIds)
-        {
-            try
-            {
-                if (SendToClient(clientId, msg)) sent++;
-            }
-            catch { }
-        }
-
-        log?.WriteLine($"[PUSH] MY_BOOKINGS_CHANGED user={userId}, sent={sent}, sub={clientIds.Count}");
+        var sent = SendToUser(userId, msg);
+        log?.WriteLine($"[PUSH] MY_BOOKINGS_CHANGED user={userId}, sent={sent}");
         return sent;
     }
     private (string status, string userId, string fullName, string bookingStatus, string purpose)
@@ -3974,6 +4869,462 @@ class ServerState
         List<string> targets;
         lock (_subLock) targets = _subSlotConfig.ToList();
         foreach (var cid in targets) SendToClient(cid, "PUSH_SLOT_CONFIG_CHANGED\n");
+    }
+    // Trả về tất cả FixedSession của userId trong khoảng ngày (dạng yyyy-MM-dd)
+    public List<FixedSession> GetFixedSessionsForUser(string userId, string fromDate, string toDate)
+    {
+        var result = new List<FixedSession>();
+        if (!_fixedSessionIdsByUser.TryGetValue(userId, out var sessionIds) || sessionIds.Count == 0)
+            return result;
+        if (!DateTime.TryParse(fromDate, out var from) || !DateTime.TryParse(toDate, out var to))
+            return result;
+        foreach (var sid in sessionIds)
+        {
+            var session = _fixedSessions.FirstOrDefault(s => s.SessionId == sid);
+            if (session == null) continue;
+            // Kiểm tra overlap date range
+            if (DateTime.TryParse(session.DateFrom, out var sFrom) && DateTime.TryParse(session.DateTo, out var sTo))
+            {
+                if (sTo < from || sFrom > to) continue;
+                result.Add(session);
+            }
+        }
+        return result;
+    }
+        // Xử lý lệnh text: GET_FIXED_SESSIONS|userId|fromDate|toDate\n
+    public void HandleGetFixedSessions(string clientId, string userId, string fromDate, string toDate, NetworkStream stream, TextWriter log)
+    {
+        var sessions = GetFixedSessionsForUser(userId, fromDate, toDate);
+        if (sessions.Count == 0)
+        {
+            Send(stream, "FIXED_SESSIONS|NONE\n");
+            return;
+        }
+        foreach (var s in sessions)
+        {
+            // Protocol: FIXED_SESSION|SessionId|SubjectCode|SubjectName|Class|LecturerUserId|RoomId|DayOfWeek|SlotStartId|SlotEndId|DateFrom|DateTo|Note
+            var msg = $"FIXED_SESSION|{s.SessionId}|{SafeField(s.SubjectCode)}|{SafeField(s.SubjectName)}|{SafeField(s.Class)}|{SafeField(s.LecturerUserId)}|{SafeField(s.RoomId)}|{SafeField(s.DayOfWeek)}|{SafeField(s.SlotStartId)}|{SafeField(s.SlotEndId)}|{SafeField(s.DateFrom)}|{SafeField(s.DateTo)}|{SafeField(s.Note)}\n";
+            Send(stream, msg);
+        }
+        Send(stream, "FIXED_SESSIONS|END\n");
+    }
+public static List<DateTime> GenerateDatesInRangeByDayOfWeek(DateTime from, DateTime to, DayOfWeek dayOfWeek)
+    {
+        var result = new List<DateTime>();
+        var current = from.Date;
+        while (current <= to.Date)
+        {
+            if (current.DayOfWeek == dayOfWeek)
+                result.Add(current);
+            current = current.AddDays(1);
+        }
+        return result;
+    }
+
+    // Hàm chính: Apply fixed schedule cho lớp/môn
+    public (bool Success, string Message, int CreatedCount, int ConflictCount) ApplyFixedSchedule(
+        string subjectCode, string subjectName, string className, string roomId,
+        DateTime from, DateTime to, DayOfWeek dow,
+        string slotStartId, string slotEndId,
+        List<string> studentUserIds, string lecturerUserId, string note)
+    {
+        // Validate input
+        if (from > to) return (false, "From date must be <= To date", 0, 0);
+        // Parse slot indices for numeric comparison
+        int slotStartNum, slotEndNum;
+        try {
+            slotStartNum = int.Parse(slotStartId.Substring(1));
+            slotEndNum = int.Parse(slotEndId.Substring(1));
+        } catch {
+            return (false, "Invalid slot id format", 0, 0);
+        }
+        if (slotStartNum > slotEndNum) return (false, "Slot start must be <= slot end", 0, 0);
+        if (!_rooms.ContainsKey(roomId)) return (false, "Invalid roomId", 0, 0);
+        if (studentUserIds == null || studentUserIds.Count == 0) return (false, "Student list cannot be empty", 0, 0);
+        if (string.IsNullOrWhiteSpace(lecturerUserId)) return (false, "LecturerId cannot be empty", 0, 0);
+
+        var dates = GenerateDatesInRangeByDayOfWeek(from, to, dow);
+        int created = 0, conflict = 0;
+        var allUserIds = new HashSet<string>(studentUserIds) { lecturerUserId };
+        lock (_lock)
+        {
+            foreach (var date in dates)
+            {
+                string dateKey = date.ToString("yyyy-MM-dd");
+                // Check duplicate: đã có session cùng date+room+slot+subject?
+                if (_fixedSessionsByDate.TryGetValue(dateKey, out var sessions))
+                {
+                    if (sessions.Any(s => s.RoomId == roomId && s.SlotStartId == slotStartId && s.SlotEndId == slotEndId && s.SubjectCode == subjectCode))
+                    {
+                        conflict++;
+                        continue;
+                    }
+                }
+                // Check conflict: slot đã event lock hoặc có booking APPROVED/IN_USE?
+                bool hasConflict = false;
+                int start = int.Parse(slotStartId.Substring(1));
+                int end = int.Parse(slotEndId.Substring(1));
+                if (!_slotsByDate.ContainsKey(dateKey))
+                    EnsureDateInitialized(dateKey, TextWriter.Null);
+                for (int i = start; i <= end; i++)
+                {
+                    string slotId = $"S{i}";
+                    var slot = _slotsByDate[dateKey][$"{roomId}::{slotId}"];
+                    if (slot.IsEventLocked)
+                    {
+                        hasConflict = true;
+                        break;
+                    }
+                    if (slot.CurrentBookingId != null)
+                    {
+                        var b = _bookings.FirstOrDefault(x => x.BookingId == slot.CurrentBookingId);
+                        if (b != null && (b.Status == "APPROVED" || b.Status == "IN_USE"))
+                        {
+                            hasConflict = true;
+                            break;
+                        }
+                    }
+                }
+                if (hasConflict)
+                {
+                    conflict++;
+                    continue;
+                }
+                // Tạo session
+                var sessionId = CreateFixedSession(
+                    dateKey, roomId, slotStartId, slotEndId,
+                    subjectCode, subjectName, className, lecturerUserId, studentUserIds, note);
+                AddParticipants(sessionId, studentUserIds, lecturerUserId);
+                LockSlotsForEvent(dateKey, roomId, slotStartId, slotEndId, $"{subjectCode}-{subjectName}");
+                // Index by date
+                if (!_fixedSessionsByDate.TryGetValue(dateKey, out var list))
+                {
+                    list = new List<FixedSession>();
+                    _fixedSessionsByDate[dateKey] = list;
+                }
+                var session = _fixedSessions.First(x => x.SessionId == sessionId);
+                list.Add(session);
+                // Index by user
+                foreach (var uid in allUserIds)
+                {
+                    if (!_fixedSessionIdsByUser.TryGetValue(uid, out var set))
+                    {
+                        set = new HashSet<Guid>();
+                        _fixedSessionIdsByUser[uid] = set;
+                    }
+                    set.Add(sessionId);
+                }
+                created++;
+            }
+        }
+        // Push realtime cho tất cả participants
+        foreach (var userId in allUserIds)
+        {
+            PushHomeChanged(userId);
+            PushMyScheduleChanged(userId);
+        }
+        if (created == 0)
+            return (false, $"No sessions created. {conflict} conflicts.", 0, conflict);
+        return (true, $"Created {created} sessions, {conflict} conflicts.", created, conflict);
+    }
+
+    // Tạo FixedSession cho 1 ngày
+    private Guid CreateFixedSession(
+        string dateKey, string roomId, string slotStartId, string slotEndId,
+        string subjectCode, string subjectName, string className, string lecturerUserId, List<string> studentUserIds, string note)
+    {
+        var session = new FixedSession
+        {
+            SessionId = Guid.NewGuid(),
+            DateFrom = dateKey,
+            DateTo = dateKey,
+            DayOfWeek = "", // not needed for single session
+            RoomId = roomId,
+            SlotStartId = slotStartId,
+            SlotEndId = slotEndId,
+            SubjectCode = subjectCode,
+            SubjectName = subjectName,
+            Class = className,
+            LecturerUserId = lecturerUserId,
+            StudentUserIds = new List<string>(studentUserIds),
+            Note = note,
+            CreatedAt = DateTime.Now,
+            UpdatedAt = DateTime.Now
+        };
+        _fixedSessions.Add(session);
+        return session.SessionId;
+    }
+
+    // Thêm participants cho session
+    private void AddParticipants(Guid sessionId, List<string> studentUserIds, string lecturerUserId)
+    {
+        var session = _fixedSessions.First(x => x.SessionId == sessionId);
+        foreach (var userId in studentUserIds)
+        {
+            session.Participants.Add(new FixedParticipant
+            {
+                SessionId = sessionId,
+                UserId = userId,
+                Role = "Student"
+            });
+        }
+        session.Participants.Add(new FixedParticipant
+        {
+            SessionId = sessionId,
+            UserId = lecturerUserId,
+            Role = "Lecturer"
+        });
+    }
+
+    // Lock slot cho event
+    private void LockSlotsForEvent(string dateKey, string roomId, string slotStartId, string slotEndId, string note)
+    {
+        int start = int.Parse(slotStartId.Substring(1));
+        int end = int.Parse(slotEndId.Substring(1));
+        for (int i = start; i <= end; i++)
+        {
+            string slotId = $"S{i}";
+            var slot = _slotsByDate[dateKey][$"{roomId}::{slotId}"];
+            slot.IsEventLocked = true;
+            slot.EventNote = note;
+            // Push slot update để client reload _gridRoomSlots
+            PushSlotUpdate(roomId, dateKey, slotId, TextWriter.Null);
+        }
+    }
+
+        // Push schedule changed for a user (for fixed sessions)
+    public int PushMyScheduleChanged(string userId, TextWriter? log = null)
+    {
+        var msg = $"PUSH_MY_SCHEDULE_CHANGED|{userId}\n";
+        List<string> clientIds;
+        lock (_subLock)
+        {
+            if (!_subMyBookings.TryGetValue(userId, out var set) || set.Count == 0)
+                return 0;
+            clientIds = set.ToList();
+        }
+        int sent = 0;
+        foreach (var clientId in clientIds)
+        {
+            try
+            {
+                if (SendToClient(clientId, msg)) sent++;
+            }
+            catch { }
+        }
+        log?.WriteLine($"[PUSH] MY_SCHEDULE_CHANGED user={userId}, sent={sent}, sub={clientIds.Count}");
+        return sent;
+    }
+        // Helper: Lấy trạng thái slot (dùng cho UI Form1)
+    public SlotState? GetSlotState(string dateKey, string roomId, string slotId)
+    {
+        lock (_lock)
+        {
+            if (_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
+            {
+                var key = MakeKey(roomId, slotId);
+                if (slotsForDate.TryGetValue(key, out var slotState))
+                    return slotState;
+            }
+        }
+        return null;
+    }
+
+    // Helper: Lấy FixedSession cho slot event lock (dùng cho UI Form1)
+    public FixedSession? GetFixedSessionForSlot(DateTime date, string roomId, string slotId)
+    {
+        var dateKey = date.ToString("yyyy-MM-dd");
+        lock (_lock)
+        {
+            foreach (var session in _fixedSessions)
+            {
+                if (session.RoomId == roomId &&
+                    int.TryParse(session.SlotStartId.Replace("S", ""), out var sIdx) &&
+                    int.TryParse(session.SlotEndId.Replace("S", ""), out var eIdx) &&
+                    int.TryParse(slotId.Replace("S", ""), out var idx) &&
+                    idx >= sIdx && idx <= eIdx &&
+                    DateTime.TryParse(session.DateFrom, out var from) &&
+                    DateTime.TryParse(session.DateTo, out var to) &&
+                    date >= from && date <= to &&
+                    session.LockedDates.Contains(dateKey))
+                {
+                    return session;
+                }
+            }
+        }
+        return null;
+    }
+
+    // Lấy tất cả Fixed Schedules (cho UI admin)
+    public List<FixedSession> GetAllFixedSessions()
+    {
+        lock (_lock)
+        {
+            return _fixedSessions.ToList();
+        }
+    }
+
+    // Reset ALL data: bookings, fixed schedules, locks
+    public void ResetAllData(TextWriter log)
+    {
+        lock (_lock)
+        {
+            log.WriteLine("[RESET_ALL] Starting reset all data...");
+
+            // 1. Clear all bookings
+            var bookingCount = _bookings.Count;
+            _bookings.Clear();
+            log.WriteLine($"[RESET_ALL] Cleared {bookingCount} bookings");
+
+            // 2. Clear all fixed sessions
+            var fixedCount = _fixedSessions.Count;
+            _fixedSessions.Clear();
+            _fixedSessionsByDate.Clear();
+            _fixedSessionIdsByUser.Clear();
+            log.WriteLine($"[RESET_ALL] Cleared {fixedCount} fixed schedules");
+
+            // 3. Unlock all slots and clear event locks
+            var slotCount = 0;
+            foreach (var dateKey in _slotsByDate.Keys.ToList())
+            {
+                var slotsForDate = _slotsByDate[dateKey];
+                foreach (var slot in slotsForDate.Values)
+                {
+                    if (slot.CurrentBookingId != null || slot.IsEventLocked)
+                    {
+                        slot.IsBusy = false;
+                        slot.CurrentHolderClientId = null;
+                        slot.CurrentHolderUserId = null;
+                        slot.CurrentBookingId = null;
+                        slot.IsEventLocked = false;
+                        slot.EventNote = null;
+                        slot.WaitingQueue.Clear();
+                        slotCount++;
+                    }
+                }
+            }
+            log.WriteLine($"[RESET_ALL] Unlocked {slotCount} slots");
+
+            // 4. Broadcast to all clients
+            log.WriteLine("[RESET_ALL] Broadcasting changes to all clients...");
+            foreach (var userId in UsersInfo.Keys)
+            {
+                PushMyBookingsChanged(userId);
+                PushFixedSessionsChanged(userId);
+                PushHomeChanged(userId);
+            }
+
+            RaiseStateChanged();
+            log.WriteLine("[RESET_ALL] Reset completed successfully!");
+        }
+    }
+
+    // Xoá Fixed Schedule và unlock tất cả slots
+    public bool DeleteFixedSchedule(Guid sessionId, TextWriter log, out string error)
+    {
+        error = "";
+        lock (_lock)
+        {
+            var session = _fixedSessions.FirstOrDefault(s => s.SessionId == sessionId);
+            if (session == null)
+            {
+                error = "Fixed schedule không tồn tại.";
+                return false;
+            }
+
+            // 1. Unlock tất cả slots đã lock
+            if (DateTime.TryParse(session.DateFrom, out var dateFrom) && 
+                DateTime.TryParse(session.DateTo, out var dateTo))
+            {
+                for (var d = dateFrom; d <= dateTo; d = d.AddDays(1))
+                {
+                    // Kiểm tra DayOfWeek nếu có
+                    if (!string.IsNullOrWhiteSpace(session.DayOfWeek) && 
+                        !string.Equals(d.DayOfWeek.ToString(), session.DayOfWeek, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var dateKey = d.ToString("yyyy-MM-dd");
+                    
+                    // Unlock slots
+                    if (_slotsByDate.TryGetValue(dateKey, out var slotsForDate))
+                    {
+                        int startIdx = ParseSlotIndex(session.SlotStartId);
+                        int endIdx = ParseSlotIndex(session.SlotEndId);
+                        
+                        for (int idx = startIdx; idx <= endIdx; idx++)
+                        {
+                            var slotId = GetSlotId(idx);
+                            var key = MakeKey(session.RoomId, slotId);
+                            
+                            if (slotsForDate.TryGetValue(key, out var slot))
+                            {
+                                slot.IsEventLocked = false;
+                                slot.EventNote = "";
+                                log.WriteLine($"[FIXED_SCHEDULE][DELETE] Unlocked {session.RoomId}-{slotId} on {dateKey}");
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Xoá khỏi index _fixedSessionsByDate
+            foreach (var dateKey in session.LockedDates)
+            {
+                if (_fixedSessionsByDate.TryGetValue(dateKey, out var list))
+                {
+                    list.RemoveAll(s => s.SessionId == sessionId);
+                }
+            }
+
+            // 3. Xoá khỏi index _fixedSessionIdsByUser
+            var allUserIds = new List<string>();
+            if (!string.IsNullOrWhiteSpace(session.LecturerUserId))
+                allUserIds.Add(session.LecturerUserId);
+            allUserIds.AddRange(session.StudentUserIds);
+
+            foreach (var userId in allUserIds)
+            {
+                if (_fixedSessionIdsByUser.TryGetValue(userId, out var sessionIds))
+                {
+                    sessionIds.Remove(sessionId);
+                }
+            }
+
+            // 4. Xoá khỏi list chính
+            _fixedSessions.RemoveAll(s => s.SessionId == sessionId);
+
+            log.WriteLine($"[FIXED_SCHEDULE][DELETE] Deleted session {sessionId} ({session.SubjectCode} - {session.SubjectName})");
+            
+            // 5. Push notification cho các user bị ảnh hưởng
+            foreach (var userId in allUserIds)
+            {
+                PushFixedSessionsChanged(userId);
+                PushHomeChanged(userId);
+
+                NotifyUser(userId,
+                    $"NOTIFY_FIXED_DELETED|{SafeField(session.SubjectCode)}|{SafeField(session.SubjectName)}|{SafeField(session.RoomId)}|{SafeField(session.SlotStartId)}|{SafeField(session.SlotEndId)}|{SafeField(session.DateFrom)}|{SafeField(session.DateTo)}");
+            }
+
+            if (_settings.SendEmailOnForceGrantRelease)
+            {
+                var emailSubject = "[Room booking] Lịch cố định đã bị xoá";
+                foreach (var uid in allUserIds.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var body =
+                        "Một lịch cố định mà bạn tham gia đã bị xoá.\n\n" +
+                        $"- Môn: {session.SubjectCode} - {session.SubjectName}\n" +
+                        $"- Lớp: {session.Class}\n" +
+                        $"- Phòng: {session.RoomId}\n" +
+                        $"- Ca: {session.SlotStartId} - {session.SlotEndId}\n" +
+                        $"- Từ ngày: {session.DateFrom}\n" +
+                        $"- Đến ngày: {session.DateTo}\n";
+                    QueueEmailToUser(uid, emailSubject, body, log);
+                }
+            }
+
+            RaiseStateChanged();
+            return true;
+        }
     }
 
 }

@@ -9,15 +9,31 @@ using System.Windows.Forms;
 using WinFormsTimer = System.Windows.Forms.Timer;
 using System.Collections.Generic;
 using System.Linq;
+using System.ComponentModel;
 namespace BookingServer;
 
 using System.Net;
 using System.Net.Mail;
-public class Form1 : Form
+public partial class Form1 : Form
 {
     // ===== Layout chính =====
     private Panel _panelTop = null!;
     private SplitContainer _mainSplit = null!;
+    private Panel _panelSidebar = null!;
+    private Panel _panelMain = null!;
+    private FlowLayoutPanel _flpSidebar = null!;
+    private Panel _navMonitor = null!;
+    private Panel _navCheckin = null!;
+    private Panel _navRoomMgmt = null!;
+    private Panel _navUserMgmt = null!;
+    private Panel _navReports = null!;
+    private Panel _navSettings = null!;
+    private Panel _navLogs = null!;
+    private Panel _panelSectionHeader = null!;
+    private Label _lblSectionTitle = null!;
+    private Label _lblBreadcrumb = null!;
+    private string _activeSection = "Monitor";
+    private int _lastMonitorSplitterDistance = 450;
 
     // ===== Left: Tab nhỏ (Hôm nay / Theo phòng) =====
     private TabControl _tabLeft = null!;
@@ -26,12 +42,32 @@ public class Form1 : Form
 
     // Tab Hôm nay: dùng grid slots hiện tại
     private DataGridView _gridSlots = null!; // giữ tên cũ để các hàm khác không lỗi
+    private BindingList<SlotSummary> _gridSlotsBinding = null!;
+    private BindingSource _gridSlotsSource = null!;
+    private bool _suppressSlotSelectionChanged;
+    private string? _lastEnabledSlotRoomId;
+    private string? _lastEnabledSlotSlotId;
 
     // Tab Theo phòng
     private ComboBox _cbRoomFilter = null!;
     private DateTimePicker _dtRoomFilterDate = null!;
     private Button _btnRoomFilterSearch = null!;
     private DataGridView _gridRoomDaily = null!;
+
+    /////////////////////////////////////////////////////
+    // Fixed schedule: student/lecturer selection
+    private TextBox _txtFixedStudentId = null!;
+    private Button _btnFixedAddStudent = null!;
+    private TextBox _txtFixedStudentIdBulk = null!;  // Multi-line textbox for bulk add
+    private Button _btnFixedAddStudentBulk = null!;  // Button for bulk add
+    private ListBox _lstFixedStudents = null!;
+    private Button _btnFixedRemoveStudent = null!;
+    private TextBox _txtFixedLecturerId = null!;
+    private Button _btnFixedAddLecturer = null!;
+    private Label _lblFixedLecturer = null!;
+    private Button _btnFixedRemoveLecturer = null!;
+    private string? _fixedLecturerUserId = null;
+    private List<string> _fixedStudentUserIds = new();
 
     // ===== Right: Tab lớn =====
     private TabControl _tabRight = null!;
@@ -62,6 +98,7 @@ public class Form1 : Form
     private TextBox _txtForceUserId = null!;
     private Button _btnForceGrant = null!;
     private Button _btnForceRelease = null!;
+    private ComboBox _cbForceRoom = null!;
     private ComboBox _cbForceSlotStart = null!;
     private ComboBox _cbForceSlotEnd = null!;
     private Button _btnForceGrantRange = null!;
@@ -126,6 +163,9 @@ public class Form1 : Form
     private ComboBox _cbFixedSlotStart = null!;
     private ComboBox _cbFixedSlotEnd = null!;
     private Button _btnFixedApply = null!;
+    // Fixed schedule management
+    private DataGridView _gridFixedSchedules = null!;
+    private Button _btnDeleteFixedSchedule = null!;
     // ===== Tab User Management =====
     private DataGridView _gridUsers = null!;
     private TextBox _txtUserId = null!;
@@ -176,6 +216,7 @@ public class Form1 : Form
     // ===== Tab Settings =====
     private DataGridView _gridSlotConfig = null!;
     private NumericUpDown _numCheckinDeadlineMinutes = null!;
+    private CheckBox _chkSendEmailGrant = null!;
     private CheckBox _chkSendEmailForce = null!;
     private CheckBox _chkSendEmailNoShow = null!;
     private CheckBox _chkNotifyClient = null!;
@@ -189,6 +230,7 @@ public class Form1 : Form
     private TextBox _txtSmtpFrom = null!;
 
     private Button _btnSettingsSave = null!;
+    private Button _btnResetAllData = null!;
 
     // ===== Tab Log =====
     private TextBox _txtLog = null!;   // giữ tên cũ, chỉ đổi parent sang tab Log
@@ -238,6 +280,15 @@ public class Form1 : Form
         _state.SetCurrentDate(DateTime.Today, logger);
 
         _state.StateChanged += () => RefreshSlotsSafe();
+        
+        // ✅ Subscribe vào event FixedScheduleCreated để refresh ngay lập tức
+        _state.FixedScheduleCreated += () =>
+        {
+            Console.WriteLine($"[EVENT] FixedScheduleCreated triggered at {DateTime.Now:HH:mm:ss.fff}");
+            RefreshSlotsSafe();
+            RefreshFixedSchedulesGrid();
+            Console.WriteLine($"[EVENT] UI refreshed at {DateTime.Now:HH:mm:ss.fff}");
+        };
 
         // 3) Refresh grid
         RefreshSlotsSafe();
@@ -264,13 +315,79 @@ public class Form1 : Form
         // (tuỳ thích)
         // this.WindowState = FormWindowState.Maximized;
 
+        var root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.White,
+            ColumnCount = 2,
+            RowCount = 1
+        };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 240f));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+        this.Controls.Add(root);
+
+        _panelSidebar = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.FromArgb(17, 24, 39),
+            Padding = new Padding(12)
+        };
+        root.Controls.Add(_panelSidebar, 0, 0);
+
+        _panelMain = new Panel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.White
+        };
+        root.Controls.Add(_panelMain, 1, 0);
+
+        BuildDashboardSidebar();
+
+        _panelSectionHeader = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 56,
+            BackColor = Color.White,
+            Padding = new Padding(14, 10, 14, 8)
+        };
+
+        var hdr = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 2
+        };
+        hdr.RowStyles.Add(new RowStyle(SizeType.Absolute, 26f));
+        hdr.RowStyles.Add(new RowStyle(SizeType.Absolute, 18f));
+        _panelSectionHeader.Controls.Add(hdr);
+
+        _lblSectionTitle = new Label
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 12.5f, FontStyle.Bold),
+            ForeColor = Color.FromArgb(17, 24, 39),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        _lblBreadcrumb = new Label
+        {
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(107, 114, 128),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+
+        hdr.Controls.Add(_lblSectionTitle, 0, 0);
+        hdr.Controls.Add(_lblBreadcrumb, 0, 1);
+
         // ===== TOP: Start Server + DatePicker =====
         _panelTop = new Panel
         {
             Dock = DockStyle.Top,
             Height = 45
         };
-        this.Controls.Add(_panelTop);
+        _panelTop.BackColor = Color.White;
 
         _btnStart = new Button
         {
@@ -305,37 +422,438 @@ public class Form1 : Form
         _panelTop.Controls.Add(_lblNow);
 
         // ===== MAIN SPLIT: Left (slot list) / Right (tabs) =====
+
         _mainSplit = new SplitContainer
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 450,
             BorderStyle = BorderStyle.Fixed3D,
             IsSplitterFixed = false
         };
-        this.Controls.Add(_mainSplit);
+        // Set initial SplitterDistance safely
+        int initialDistance = 450;
+        TrySetSplitterDistance(_mainSplit, initialDistance);
+        _panelMain.Controls.Add(_mainSplit);
+        _panelMain.Controls.Add(_panelTop);
+        _panelMain.Controls.Add(_panelSectionHeader);
 
         // Thiết lập chia đôi 50-50 responsive khi form load
+
         this.Load += (s, e) =>
         {
-            _mainSplit.SplitterDistance = this.ClientSize.Width / 2;
-        };
-
-        // Giữ tỷ lệ 50-50 khi resize form
-        this.Resize += (s, e) =>
-        {
-            int targetDistance = this.ClientSize.Width / 2;
-            if (Math.Abs(_mainSplit.SplitterDistance - targetDistance) > 5)
+            if (!_mainSplit.Panel1Collapsed)
             {
-                _mainSplit.SplitterDistance = targetDistance;
+                int dist = this.ClientSize.Width / 2;
+                TrySetSplitterDistance(_mainSplit, dist);
             }
         };
 
-        _mainSplit.Panel1.Padding = new Padding(0, 50, 0, 0);   // hạ tab trái xuống 8px
-        _mainSplit.Panel2.Padding = new Padding(0, 50, 0, 0);   // hạ tab phải xuống 8px
+        // Giữ tỷ lệ 50-50 khi resize form
+
+        this.Resize += (s, e) =>
+        {
+            if (!_mainSplit.Panel1Collapsed)
+            {
+                int targetDistance = this.ClientSize.Width / 2;
+                if (Math.Abs(_mainSplit.SplitterDistance - targetDistance) > 5)
+                {
+                    TrySetSplitterDistance(_mainSplit, targetDistance);
+                }
+            }
+        };
 
         BuildLeftTabs();   // Tab nhỏ bên trái
         BuildRightTabs();  // Tab lớn bên phải
+
+        NavigateDashboard("Monitor");
+    }
+
+    private void BuildDashboardSidebar()
+    {
+        _panelSidebar.Controls.Clear();
+
+        var brand = new Label
+        {
+            Text = "ROOM BOOKING",
+            Dock = DockStyle.Top,
+            Height = 44,
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        _panelSidebar.Controls.Add(brand);
+
+        _flpSidebar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true
+        };
+        _panelSidebar.Controls.Add(_flpSidebar);
+
+        _navMonitor = CreateSidebarItem("\uE7F4", "Monitor", "Tổng quan");
+        _navCheckin = CreateSidebarItem("\uE8D4", "Checkin", "Check-in / Slot detail");
+        _navRoomMgmt = CreateSidebarItem("\uE80F", "RoomMgmt", "Quản lý Phòng");
+        _navUserMgmt = CreateSidebarItem("\uE716", "UserMgmt", "Quản lý Người dùng");
+        _navReports = CreateSidebarItem("\uE9D2", "Reports", "Báo cáo / Thống kê");
+        _navSettings = CreateSidebarItem("\uE713", "Settings", "Cài đặt");
+        _navLogs = CreateSidebarItem("\uE9D9", "Logs", "Logs");
+
+        _flpSidebar.Controls.Add(_navMonitor);
+        _flpSidebar.Controls.Add(_navCheckin);
+        _flpSidebar.Controls.Add(_navRoomMgmt);
+        _flpSidebar.Controls.Add(_navUserMgmt);
+        _flpSidebar.Controls.Add(_navReports);
+        _flpSidebar.Controls.Add(_navSettings);
+        _flpSidebar.Controls.Add(_navLogs);
+
+        _panelSidebar.SizeChanged += (s, e) =>
+        {
+            var w = Math.Max(160, _panelSidebar.ClientSize.Width - 24);
+            foreach (Control c in _flpSidebar.Controls)
+            {
+                c.Width = w;
+            }
+        };
+    }
+
+    private Panel CreateSidebarItem(string iconGlyph, string sectionKey, string text)
+    {
+        var item = new Panel
+        {
+            Height = 42,
+            Width = Math.Max(160, _panelSidebar.ClientSize.Width - 24),
+            BackColor = Color.FromArgb(17, 24, 39),
+            Margin = new Padding(0, 6, 0, 0),
+            Cursor = Cursors.Hand,
+            Tag = sectionKey
+        };
+
+        var lblIcon = new Label
+        {
+            Left = 10,
+            Top = 9,
+            Width = 22,
+            Height = 22,
+            Font = new Font("Segoe MDL2 Assets", 14f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(229, 231, 235),
+            Text = iconGlyph,
+            TextAlign = ContentAlignment.MiddleCenter
+        };
+        item.Controls.Add(lblIcon);
+
+        var lblText = new Label
+        {
+            Left = 40,
+            Top = 0,
+            Width = 170,
+            Height = 42,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Regular),
+            ForeColor = Color.FromArgb(229, 231, 235),
+            Text = text,
+            TextAlign = ContentAlignment.MiddleLeft
+        };
+        item.Controls.Add(lblText);
+
+        void ClickNav(object? s, EventArgs e)
+        {
+            NavigateDashboard(sectionKey);
+        }
+
+        item.Click += ClickNav;
+        lblIcon.Click += ClickNav;
+        lblText.Click += ClickNav;
+
+        item.MouseEnter += (s, e) =>
+        {
+            if (!string.Equals(_activeSection, sectionKey, StringComparison.OrdinalIgnoreCase))
+                item.BackColor = Color.FromArgb(31, 41, 55);
+        };
+        item.MouseLeave += (s, e) =>
+        {
+            if (!string.Equals(_activeSection, sectionKey, StringComparison.OrdinalIgnoreCase))
+                item.BackColor = Color.FromArgb(17, 24, 39);
+        };
+
+        return item;
+    }
+
+    private void NavigateDashboard(string section)
+    {
+        _activeSection = section;
+
+        if (_mainSplit != null && !_mainSplit.IsDisposed)
+        {
+            if (section == "Monitor")
+            {
+                _mainSplit.Panel1Collapsed = false;
+                TrySetSplitterDistance(_mainSplit, _lastMonitorSplitterDistance);
+                if (_tabRight != null && _tabSlotDetail != null)
+                    _tabRight.SelectedTab = _tabSlotDetail;
+            }
+            else if (section == "Checkin")
+            {
+                _mainSplit.Panel1Collapsed = false;
+                TrySetSplitterDistance(_mainSplit, _lastMonitorSplitterDistance);
+                if (_tabRight != null && _tabSlotDetail != null)
+                    _tabRight.SelectedTab = _tabSlotDetail;
+            }
+            else
+            {
+                if (!_mainSplit.Panel1Collapsed)
+                    _lastMonitorSplitterDistance = _mainSplit.SplitterDistance;
+
+                _mainSplit.Panel1Collapsed = true;
+
+                if (_tabRight != null)
+                {
+                    if (section == "RoomMgmt" && _tabRoomMgmt != null)
+                        _tabRight.SelectedTab = _tabRoomMgmt;
+                    else if (section == "UserMgmt" && _tabUserMgmt != null)
+                        _tabRight.SelectedTab = _tabUserMgmt;
+                    else if (section == "Reports" && _tabStatistics != null)
+                        _tabRight.SelectedTab = _tabStatistics;
+                    else if (section == "Settings" && _tabSettings != null)
+                        _tabRight.SelectedTab = _tabSettings;
+                    else if (section == "Logs" && _tabLogTab != null)
+                        _tabRight.SelectedTab = _tabLogTab;
+                }
+            }
+        }
+
+        if (_lblSectionTitle != null && _lblBreadcrumb != null)
+        {
+            if (section == "Monitor")
+            {
+                _lblSectionTitle.Text = "Monitor";
+                _lblBreadcrumb.Text = "Dashboard / Monitor";
+            }
+            else if (section == "Checkin")
+            {
+                _lblSectionTitle.Text = "Slot detail / Check-in";
+                _lblBreadcrumb.Text = "Dashboard / Monitor / Check-in";
+            }
+            else if (section == "RoomMgmt")
+            {
+                _lblSectionTitle.Text = "Quản lý Phòng";
+                _lblBreadcrumb.Text = "Dashboard / Quản lý / Phòng";
+            }
+            else if (section == "UserMgmt")
+            {
+                _lblSectionTitle.Text = "Quản lý Người dùng";
+                _lblBreadcrumb.Text = "Dashboard / Quản lý / Người dùng";
+            }
+            else if (section == "Reports")
+            {
+                _lblSectionTitle.Text = "Báo cáo / Thống kê";
+                _lblBreadcrumb.Text = "Dashboard / Báo cáo";
+            }
+            else if (section == "Settings")
+            {
+                _lblSectionTitle.Text = "Cài đặt";
+                _lblBreadcrumb.Text = "Dashboard / Cài đặt";
+            }
+            else if (section == "Logs")
+            {
+                _lblSectionTitle.Text = "Logs";
+                _lblBreadcrumb.Text = "Dashboard / Logs";
+            }
+            else
+            {
+                _lblSectionTitle.Text = section;
+                _lblBreadcrumb.Text = "Dashboard";
+            }
+        }
+
+        UpdateSidebarSelection();
+    }
+
+    private void UpdateSidebarSelection()
+    {
+        void Apply(Panel? p, bool active)
+        {
+            if (p == null) return;
+            p.BackColor = active ? Color.FromArgb(37, 99, 235) : Color.FromArgb(17, 24, 39);
+            foreach (Control c in p.Controls)
+            {
+                if (c is Label lbl)
+                    lbl.ForeColor = active ? Color.White : Color.FromArgb(229, 231, 235);
+            }
+        }
+
+        Apply(_navMonitor, _activeSection == "Monitor");
+        Apply(_navCheckin, _activeSection == "Checkin");
+        Apply(_navRoomMgmt, _activeSection == "RoomMgmt");
+        Apply(_navUserMgmt, _activeSection == "UserMgmt");
+        Apply(_navReports, _activeSection == "Reports");
+        Apply(_navSettings, _activeSection == "Settings");
+        Apply(_navLogs, _activeSection == "Logs");
+    }
+
+    private bool TrySetSplitterDistance(SplitContainer split, int value)
+    {
+        int min1 = split.Panel1MinSize;
+        int min2 = split.Panel2MinSize;
+
+        int total = split.Orientation == Orientation.Vertical
+            ? split.ClientSize.Width
+            : split.ClientSize.Height;
+
+        int minTotal = min1 + min2 + split.SplitterWidth;
+        if (total <= minTotal)
+            return false;
+
+        int max = total - min2 - split.SplitterWidth;
+        int clamped = value;
+        if (clamped < min1) clamped = min1;
+        if (clamped > max) clamped = max;
+
+        try
+        {
+            split.SplitterDistance = clamped;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private bool IsRoomDisabledUi(string? roomId)
+    {
+        roomId = (roomId ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(roomId))
+            return false;
+
+        if (!_state.RoomsInfo.TryGetValue(roomId, out var r) || r == null)
+            return false;
+
+        return string.Equals((r.Status ?? "").Trim(), "DISABLED", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ApplyRoomMgmtGridDisabledStyle()
+    {
+        if (_gridRooms == null) return;
+
+        foreach (DataGridViewRow row in _gridRooms.Rows)
+        {
+            if (row.DataBoundItem is not RoomInfo r) continue;
+
+            bool disabled = string.Equals((r.Status ?? "").Trim(), "DISABLED", StringComparison.OrdinalIgnoreCase);
+            row.DefaultCellStyle.ForeColor = disabled ? Color.FromArgb(156, 163, 175) : Color.Black;
+            row.DefaultCellStyle.BackColor = disabled ? Color.FromArgb(243, 244, 246) : Color.White;
+            row.DefaultCellStyle.SelectionBackColor = disabled ? Color.FromArgb(229, 231, 235) : _gridRooms.DefaultCellStyle.SelectionBackColor;
+            row.DefaultCellStyle.SelectionForeColor = disabled ? Color.FromArgb(107, 114, 128) : _gridRooms.DefaultCellStyle.SelectionForeColor;
+        }
+    }
+
+    private void ApplySlotGridDisabledRoomStyle()
+    {
+        if (_gridSlots == null) return;
+
+        foreach (DataGridViewRow row in _gridSlots.Rows)
+        {
+            if (row.DataBoundItem is not SlotSummary ss) continue;
+            bool disabled = IsRoomDisabledUi(ss.RoomId);
+
+            row.DefaultCellStyle.ForeColor = disabled ? Color.FromArgb(156, 163, 175) : _gridSlots.DefaultCellStyle.ForeColor;
+            row.DefaultCellStyle.BackColor = disabled ? Color.FromArgb(243, 244, 246) : _gridSlots.DefaultCellStyle.BackColor;
+            row.DefaultCellStyle.SelectionBackColor = disabled ? Color.FromArgb(229, 231, 235) : _gridSlots.DefaultCellStyle.SelectionBackColor;
+            row.DefaultCellStyle.SelectionForeColor = disabled ? Color.FromArgb(107, 114, 128) : _gridSlots.DefaultCellStyle.SelectionForeColor;
+        }
+    }
+
+    private void ConfigureRoomComboBox(ComboBox cb)
+    {
+        cb.DrawMode = DrawMode.OwnerDrawFixed;
+        cb.DrawItem -= RoomComboBox_DrawItem;
+        cb.DrawItem += RoomComboBox_DrawItem;
+
+        cb.SelectionChangeCommitted -= RoomComboBox_SelectionChangeCommitted;
+        cb.SelectionChangeCommitted += RoomComboBox_SelectionChangeCommitted;
+
+        if (cb.Tag == null)
+            cb.Tag = cb.SelectedItem?.ToString();
+    }
+
+    private void RoomComboBox_DrawItem(object? sender, DrawItemEventArgs e)
+    {
+        if (sender is not ComboBox cb) return;
+        if (e.Index < 0) return;
+
+        var roomId = cb.Items[e.Index]?.ToString() ?? "";
+        bool disabled = IsRoomDisabledUi(roomId);
+
+        e.DrawBackground();
+        var fg = disabled ? Color.FromArgb(156, 163, 175) : cb.ForeColor;
+        TextRenderer.DrawText(e.Graphics, roomId, e.Font, e.Bounds, fg, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        e.DrawFocusRectangle();
+    }
+
+    private void RoomComboBox_SelectionChangeCommitted(object? sender, EventArgs e)
+    {
+        if (sender is not ComboBox cb) return;
+        var roomId = cb.SelectedItem?.ToString();
+        if (string.IsNullOrWhiteSpace(roomId)) return;
+
+        if (IsRoomDisabledUi(roomId))
+        {
+            var prev = cb.Tag as string;
+            if (!string.IsNullOrWhiteSpace(prev) && cb.Items.Contains(prev))
+            {
+                cb.SelectedItem = prev;
+            }
+            else
+            {
+                foreach (var item in cb.Items)
+                {
+                    var id = item?.ToString();
+                    if (!string.IsNullOrWhiteSpace(id) && !IsRoomDisabledUi(id))
+                    {
+                        cb.SelectedItem = id;
+                        cb.Tag = id;
+                        return;
+                    }
+                }
+            }
+
+            return;
+        }
+
+        cb.Tag = roomId;
+    }
+
+    private void EnsureRoomComboSelectedEnabled(ComboBox cb)
+    {
+        var current = cb.SelectedItem?.ToString();
+
+        if (!string.IsNullOrWhiteSpace(current) && !IsRoomDisabledUi(current))
+        {
+            cb.Tag = current;
+            return;
+        }
+
+        foreach (var item in cb.Items)
+        {
+            var id = item?.ToString();
+            if (string.IsNullOrWhiteSpace(id))
+                continue;
+
+            if (string.Equals(id, "ALL", StringComparison.OrdinalIgnoreCase))
+            {
+                cb.SelectedItem = id;
+                cb.Tag = id;
+                return;
+            }
+
+            if (!IsRoomDisabledUi(id))
+            {
+                cb.SelectedItem = id;
+                cb.Tag = id;
+                return;
+            }
+        }
     }
     private void BuildLeftTabs()
     {
@@ -365,6 +883,10 @@ public class Form1 : Form
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
         };
         _gridSlots.SelectionChanged += GridSlots_SelectionChanged;
+
+        _gridSlotsBinding = new BindingList<SlotSummary>();
+        _gridSlotsSource = new BindingSource { DataSource = _gridSlotsBinding };
+        _gridSlots.DataSource = _gridSlotsSource;
 
         _tabLeftToday.Controls.Add(_gridSlots);
 
@@ -447,9 +969,12 @@ public class Form1 : Form
             ReadOnly = true,
             AllowUserToAddRows = false,
             AllowUserToDeleteRows = false,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            MultiSelect = false,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
             ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize
         };
+        _gridRoomDaily.SelectionChanged += GridRoomDaily_SelectionChanged;
         pnlRoomDaily.Controls.Add(_gridRoomDaily);
     }
 
@@ -460,6 +985,11 @@ public class Form1 : Form
             Dock = DockStyle.Fill
         };
         _mainSplit.Panel2.Controls.Add(_tabRight);
+
+        _tabRight.Appearance = TabAppearance.FlatButtons;
+        _tabRight.ItemSize = new System.Drawing.Size(0, 1);
+        _tabRight.SizeMode = TabSizeMode.Fixed;
+        _tabRight.Multiline = true;
 
         _tabSlotDetail = new TabPage("Slot detail / Check-in");
         _tabRoomMgmt = new TabPage("Room management");
@@ -496,8 +1026,40 @@ public class Form1 : Form
         _tabSlotDetail.SuspendLayout();
         _tabSlotDetail.Controls.Clear();
 
-        _tabSlotDetail.AutoScroll = true;
+        _tabSlotDetail.AutoScroll = false;
         _tabSlotDetail.Padding = new Padding(10);
+        _tabSlotDetail.BackColor = Color.White;
+
+        var main = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterWidth = 6,
+            Panel1MinSize = 0,
+            Panel2MinSize = 0
+        };
+        _tabSlotDetail.Controls.Add(main);
+        main.SizeChanged += (s, e) =>
+        {
+            var total = main.ClientSize.Width;
+            if (total > 0)
+            {
+                var desiredMin = 360;
+                var maxMin = Math.Max(0, (total - main.SplitterWidth) / 2 - 10);
+                var min = Math.Min(desiredMin, maxMin);
+                main.Panel1MinSize = min;
+                main.Panel2MinSize = min;
+            }
+            TrySetSplitterDistance(main, 650);
+        };
+        TrySetSplitterDistance(main, 650);
+
+        var leftStack = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true
+        };
+        main.Panel1.Controls.Add(leftStack);
 
         // helper: tạo GroupBox xếp dọc
         GroupBox MakeGroup(string text, int height)
@@ -617,10 +1179,22 @@ public class Form1 : Form
         _btnComplete.Click += BtnComplete_Click;
         _grpCheckin.Controls.Add(_btnComplete);
 
+        var lblForceRoom = new Label { Left = 330, Top = 30, Width = 45, Text = "Room:" };
+        _grpCheckin.Controls.Add(lblForceRoom);
+
+        _cbForceRoom = new ComboBox
+        {
+            Left = 375,
+            Top = 26,
+            Width = 80,
+            DropDownStyle = ComboBoxStyle.DropDownList
+        };
+        _grpCheckin.Controls.Add(_cbForceRoom);
+
         var lblForceUser = new Label { Left = 10, Top = 62, Width = 80, Text = "Force user:" };
         _grpCheckin.Controls.Add(lblForceUser);
 
-        _txtForceUserId = new TextBox { Left = 90, Top = 58, Width = 140 };
+        _txtForceUserId = new TextBox { Left = 90, Top = 58, Width = 140, CharacterCasing = CharacterCasing.Upper };
         _grpCheckin.Controls.Add(_txtForceUserId);
 
         _btnForceGrant = new Button { Left = 240, Top = 56, Width = 80, Text = "GRANT" };
@@ -701,9 +1275,25 @@ public class Form1 : Form
             Orientation = Orientation.Vertical,     // trái: queue, phải: detail
             SplitterWidth = 6,
             FixedPanel = FixedPanel.Panel1,
-            SplitterDistance = 280                 // queue panel nhỏ vừa đủ
+            Panel1MinSize = 0,
+            Panel2MinSize = 0
         };
         grpQueueWrap.Controls.Add(queueContainer);
+
+        queueContainer.SizeChanged += (s, e) =>
+        {
+            var total = queueContainer.ClientSize.Width;
+            if (total > 0)
+            {
+                var desiredMin = 220;
+                var maxMin = Math.Max(0, (total - queueContainer.SplitterWidth) / 2 - 10);
+                var min = Math.Min(desiredMin, maxMin);
+                queueContainer.Panel1MinSize = min;
+                queueContainer.Panel2MinSize = min;
+            }
+            TrySetSplitterDistance(queueContainer, 280);
+        };
+        TrySetSplitterDistance(queueContainer, 280);
 
         // Panel trái: Queue
         var grpQueue = new GroupBox { Text = "Queue", Dock = DockStyle.Fill, Padding = new Padding(10) };
@@ -778,11 +1368,13 @@ public class Form1 : Form
         // =========================================================
         // ADD TO TAB (thứ tự: add từ DƯỚI lên trên vì Dock=Top)
         // =========================================================
-        _tabSlotDetail.Controls.Add(grpQueueWrap);
-        _tabSlotDetail.Controls.Add(grpEvent);
-        _tabSlotDetail.Controls.Add(_grpCheckin);
-        _tabSlotDetail.Controls.Add(grpBooking);
-        _tabSlotDetail.Controls.Add(grpSlotInfo);
+        grpQueueWrap.Dock = DockStyle.Fill;
+        main.Panel2.Controls.Add(grpQueueWrap);
+
+        leftStack.Controls.Add(grpEvent);
+        leftStack.Controls.Add(_grpCheckin);
+        leftStack.Controls.Add(grpBooking);
+        leftStack.Controls.Add(grpSlotInfo);
 
         _tabSlotDetail.ResumeLayout(true);
     }
@@ -791,6 +1383,7 @@ public class Form1 : Form
     {
         _tabRoomMgmt.Controls.Clear();
         _tabRoomMgmt.AutoScroll = true;
+        _tabRoomMgmt.BackColor = Color.White;
 
         // ===== TABLELAYOUT: 2 CỘT (TRÁI LIST / PHẢI DETAIL + FIXED) =====
         var table = new TableLayoutPanel
@@ -799,8 +1392,9 @@ public class Form1 : Form
             ColumnCount = 2,
             RowCount = 1
         };
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // trái 50%
-        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50)); // phải 50%
+        table.Padding = new Padding(12);
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 46)); // trái 50%
+        table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 54)); // phải 50%
         table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _tabRoomMgmt.Controls.Add(table);
 
@@ -812,6 +1406,7 @@ public class Form1 : Form
             Text = "Room list",
             Dock = DockStyle.Fill
         };
+        grpList.Padding = new Padding(10);
         table.Controls.Add(grpList, 0, 0);
 
         var pnlLeft = new Panel
@@ -824,32 +1419,40 @@ public class Form1 : Form
         var pnlSearch = new Panel
         {
             Dock = DockStyle.Top,
-            Height = 40
+            Height = 44
         };
         pnlLeft.Controls.Add(pnlSearch);
 
+        var searchTable = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 4,
+            RowCount = 1,
+            Padding = new Padding(0, 6, 0, 6)
+        };
+        searchTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70f));
+        searchTable.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        searchTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70f));
+        searchTable.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 70f));
+        pnlSearch.Controls.Add(searchTable);
+
         var lblSearch = new Label
         {
-            Left = 5,
-            Top = 11,
-            Width = 70,
-            Text = "RoomId:"
+            Dock = DockStyle.Fill,
+            Text = "RoomId:",
+            TextAlign = ContentAlignment.MiddleLeft
         };
-        pnlSearch.Controls.Add(lblSearch);
+        searchTable.Controls.Add(lblSearch, 0, 0);
 
         _txtSearchRoomId = new TextBox
         {
-            Left = 75,
-            Top = 8,
-            Width = 120
+            Dock = DockStyle.Fill
         };
-        pnlSearch.Controls.Add(_txtSearchRoomId);
+        searchTable.Controls.Add(_txtSearchRoomId, 1, 0);
 
         _btnSearchRoom = new Button
         {
-            Left = 200,
-            Top = 6,
-            Width = 60,
+            Dock = DockStyle.Fill,
             Text = "Tìm"
         };
         _btnSearchRoom.Click += (s, e) =>
@@ -857,21 +1460,19 @@ public class Form1 : Form
             var keyword = _txtSearchRoomId.Text.Trim();
             RefreshRoomGrid(keyword);
         };
-        pnlSearch.Controls.Add(_btnSearchRoom);
+        searchTable.Controls.Add(_btnSearchRoom, 2, 0);
 
         _btnSearchRoomAll = new Button
         {
-            Left = 265,
-            Top = 6,
-            Width = 60,
-            Text = "All"
+            Dock = DockStyle.Fill,
+            Text = "Reset"
         };
         _btnSearchRoomAll.Click += (s, e) =>
         {
             _txtSearchRoomId.Text = "";
             RefreshRoomGrid(null);
         };
-        pnlSearch.Controls.Add(_btnSearchRoomAll);
+        searchTable.Controls.Add(_btnSearchRoomAll, 3, 0);
 
         // ---- Grid nằm dưới, Dock Fill ----
         _gridRooms = new DataGridView
@@ -883,6 +1484,16 @@ public class Form1 : Form
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect
         };
+        _gridRooms.BackgroundColor = Color.White;
+        _gridRooms.BorderStyle = BorderStyle.None;
+        _gridRooms.RowHeadersVisible = false;
+        _gridRooms.EnableHeadersVisualStyles = false;
+        _gridRooms.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(243, 244, 246);
+        _gridRooms.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(17, 24, 39);
+        _gridRooms.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+        _gridRooms.DefaultCellStyle.SelectionBackColor = Color.FromArgb(219, 234, 254);
+        _gridRooms.DefaultCellStyle.SelectionForeColor = Color.FromArgb(17, 24, 39);
+        _gridRooms.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(249, 250, 251);
         pnlLeft.Controls.Add(_gridRooms);
         _gridRooms.BringToFront();
 
@@ -905,55 +1516,90 @@ public class Form1 : Form
             Text = "Room detail",
             Dock = DockStyle.Fill
         };
+        grpRoomDetail.Padding = new Padding(10);
         rightTable.Controls.Add(grpRoomDetail, 0, 0);
 
-        // Giữ nguyên layout bên trong (tọa độ), chỉ khác là groupbox Dock = Fill
-        var lblRid = new Label { Left = 10, Top = 25, Width = 80, Text = "RoomId:" };
-        _txtRoomId = new TextBox { Left = 100, Top = 22, Width = 160 };
+        // Giữ nguyên các control field nhưng đổi layout sang TableLayoutPanel cho gọn
+        var roomForm = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            RowCount = 0
+        };
+        roomForm.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90f));
+        roomForm.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-        var lblBuilding = new Label { Left = 10, Top = 55, Width = 80, Text = "Building:" };
-        _txtRoomBuilding = new TextBox { Left = 100, Top = 52, Width = 160 };
+        void AddFormRow(Control left, Control right, int height = 30)
+        {
+            roomForm.RowCount += 1;
+            roomForm.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
+            left.Dock = DockStyle.Fill;
+            if (left is Label ll) ll.TextAlign = ContentAlignment.MiddleLeft;
+            right.Dock = DockStyle.Fill;
+            roomForm.Controls.Add(left, 0, roomForm.RowCount - 1);
+            roomForm.Controls.Add(right, 1, roomForm.RowCount - 1);
+        }
 
-        var lblCap = new Label { Left = 10, Top = 85, Width = 80, Text = "Capacity:" };
+        var lblRid = new Label { Text = "RoomId:" };
+        _txtRoomId = new TextBox();
+        AddFormRow(lblRid, _txtRoomId);
+
+        var lblBuilding = new Label { Text = "Building:" };
+        _txtRoomBuilding = new TextBox();
+        AddFormRow(lblBuilding, _txtRoomBuilding);
+
+        var lblCap = new Label { Text = "Capacity:" };
         _numRoomCapacity = new NumericUpDown
         {
-            Left = 100,
-            Top = 82,
-            Width = 80,
             Minimum = 0,
             Maximum = 500,
             Value = 60
         };
+        AddFormRow(lblCap, _numRoomCapacity);
 
-        _chkRoomProjector = new CheckBox { Left = 10, Top = 115, Width = 100, Text = "Projector" };
-        _chkRoomPC = new CheckBox { Left = 120, Top = 115, Width = 60, Text = "PC" };
-        _chkRoomAC = new CheckBox { Left = 190, Top = 115, Width = 60, Text = "A/C" };
-        _chkRoomMic = new CheckBox { Left = 10, Top = 140, Width = 100, Text = "Mic" };
+        var lblAmenities = new Label { Text = "Amenities:" };
+        var amenities = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true
+        };
+        _chkRoomProjector = new CheckBox { Text = "Projector", AutoSize = true, Margin = new Padding(0, 4, 14, 0) };
+        _chkRoomPC = new CheckBox { Text = "PC", AutoSize = true, Margin = new Padding(0, 4, 14, 0) };
+        _chkRoomAC = new CheckBox { Text = "A/C", AutoSize = true, Margin = new Padding(0, 4, 14, 0) };
+        _chkRoomMic = new CheckBox { Text = "Mic", AutoSize = true, Margin = new Padding(0, 4, 14, 0) };
+        amenities.Controls.Add(_chkRoomProjector);
+        amenities.Controls.Add(_chkRoomPC);
+        amenities.Controls.Add(_chkRoomAC);
+        amenities.Controls.Add(_chkRoomMic);
+        AddFormRow(lblAmenities, amenities, 34);
 
-        var lblStatus = new Label { Left = 120, Top = 140, Width = 60, Text = "Status:" };
+        var lblStatus = new Label { Text = "Status:" };
         _cbRoomStatus = new ComboBox
         {
-            Left = 180,
-            Top = 137,
-            Width = 100,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _cbRoomStatus.Items.AddRange(new object[] { "ACTIVE", "UNDER_MAINTENANCE", "DISABLED" });
+        _cbRoomStatus.Items.AddRange(new object[] { "ACTIVE", "DISABLED" });
         _cbRoomStatus.SelectedIndex = 0;
 
-        _btnRoomAdd = new Button { Left = 10, Top = 170, Width = 70, Text = "Add" };
-        _btnRoomUpdate = new Button { Left = 90, Top = 170, Width = 70, Text = "Update" };
-        _btnRoomDelete = new Button { Left = 170, Top = 170, Width = 70, Text = "Delete" };
+        AddFormRow(lblStatus, _cbRoomStatus);
 
-        grpRoomDetail.Controls.AddRange(new Control[]
+        var lblActions = new Label { Text = "Actions:" };
+        var actions = new FlowLayoutPanel
         {
-        lblRid, _txtRoomId,
-        lblBuilding, _txtRoomBuilding,
-        lblCap, _numRoomCapacity,
-        _chkRoomProjector, _chkRoomPC, _chkRoomAC, _chkRoomMic,
-        lblStatus, _cbRoomStatus,
-        _btnRoomAdd, _btnRoomUpdate, _btnRoomDelete
-        });
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
+        };
+        _btnRoomAdd = new Button { Width = 80, Height = 28, Text = "Add", Margin = new Padding(0, 0, 10, 0) };
+        _btnRoomUpdate = new Button { Width = 80, Height = 28, Text = "Update", Margin = new Padding(0, 0, 10, 0) };
+        _btnRoomDelete = new Button { Width = 80, Height = 28, Text = "Delete" };
+        actions.Controls.Add(_btnRoomAdd);
+        actions.Controls.Add(_btnRoomUpdate);
+        actions.Controls.Add(_btnRoomDelete);
+        AddFormRow(lblActions, actions, 36);
+
+        grpRoomDetail.Controls.Add(roomForm);
 
         // ===== Group: Fixed room config (phải dưới) =====
         var grpFixed = new GroupBox
@@ -961,14 +1607,50 @@ public class Form1 : Form
             Text = "Fixed room config (môn/lớp)",
             Dock = DockStyle.Fill
         };
+        grpFixed.Padding = new Padding(10);
         rightTable.Controls.Add(grpFixed, 0, 1);
+
+        var fixedSplit = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Vertical,
+            SplitterWidth = 6,
+            Panel1MinSize = 0,
+            Panel2MinSize = 0
+        };
+        grpFixed.Controls.Add(fixedSplit);
+        fixedSplit.SizeChanged += (s, e) =>
+        {
+            var total = fixedSplit.ClientSize.Width;
+            if (total > 0)
+            {
+                var desiredMin = 280;
+                var maxMin = Math.Max(0, (total - fixedSplit.SplitterWidth) / 2 - 10);
+                var min = Math.Min(desiredMin, maxMin);
+                fixedSplit.Panel1MinSize = min;
+                fixedSplit.Panel2MinSize = min;
+            }
+            TrySetSplitterDistance(fixedSplit, 420);
+        };
+        TrySetSplitterDistance(fixedSplit, 420);
+
+        var pnlFixedForm = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true
+        };
+        fixedSplit.Panel1.Controls.Add(pnlFixedForm);
+
+        var pnlFixedList = new Panel
+        {
+            Dock = DockStyle.Fill
+        };
+        fixedSplit.Panel2.Controls.Add(pnlFixedList);
 
         var lblSubCode = new Label { Left = 10, Top = 25, Width = 100, Text = "Subject code:" };
         _txtFixedSubjectCode = new TextBox { Left = 110, Top = 22, Width = 150 };
-
         var lblSubName = new Label { Left = 10, Top = 55, Width = 100, Text = "Subject name:" };
         _txtFixedSubjectName = new TextBox { Left = 110, Top = 52, Width = 150 };
-
         var lblClass = new Label { Left = 10, Top = 85, Width = 100, Text = "Class:" };
         _txtFixedClass = new TextBox { Left = 110, Top = 82, Width = 150 };
 
@@ -999,8 +1681,6 @@ public class Form1 : Form
             CustomFormat = "yyyy-MM-dd"
         };
 
-        // ====== PHẦN MỚI: chọn thứ + ca + nút Apply lịch cố định ======
-
         var lblDow = new Label { Left = 10, Top = 175, Width = 100, Text = "Day of week:" };
         _cbFixedDayOfWeek = new ComboBox
         {
@@ -1011,17 +1691,17 @@ public class Form1 : Form
         };
         _cbFixedDayOfWeek.Items.AddRange(new object[]
         {
-        DayOfWeek.Monday,
-        DayOfWeek.Tuesday,
-        DayOfWeek.Wednesday,
-        DayOfWeek.Thursday,
-        DayOfWeek.Friday,
-        DayOfWeek.Saturday,
-        DayOfWeek.Sunday
+            DayOfWeek.Monday,
+            DayOfWeek.Tuesday,
+            DayOfWeek.Wednesday,
+            DayOfWeek.Thursday,
+            DayOfWeek.Friday,
+            DayOfWeek.Saturday,
+            DayOfWeek.Sunday
         });
-        _cbFixedDayOfWeek.SelectedItem = DayOfWeek.Saturday; // ví dụ mặc định T7
+        _cbFixedDayOfWeek.SelectedItem = DayOfWeek.Saturday;
 
-        var lblSlots = new Label { Left = 10, Top = 205, Width = 100, Text = "Slots:" };
+        var lblSlots = new Label { Left = 10, Top = 205, Width = 100, Text = "Slots (From-To):" };
         _cbFixedSlotStart = new ComboBox
         {
             Left = 110,
@@ -1029,9 +1709,10 @@ public class Form1 : Form
             Width = 70,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
+        var lblSlotTo = new Label { Left = 185, Top = 205, Width = 15, Text = "→" };
         _cbFixedSlotEnd = new ComboBox
         {
-            Left = 190,
+            Left = 205,
             Top = 202,
             Width = 70,
             DropDownStyle = ComboBoxStyle.DropDownList
@@ -1045,35 +1726,290 @@ public class Form1 : Form
         _cbFixedSlotStart.SelectedItem = "S1";
         _cbFixedSlotEnd.SelectedItem = "S4";
 
+        // === Student/Lecturer selection ===
+        var lblStudentId = new Label { Left = 10, Top = 235, Width = 100, Text = "StudentId:" };
+        _txtFixedStudentId = new TextBox { Left = 110, Top = 232, Width = 100 };
+        _btnFixedAddStudent = new Button { Left = 220, Top = 230, Width = 60, Text = "Add" };
+        _btnFixedRemoveStudent = new Button { Left = 290, Top = 230, Width = 60, Text = "Remove" };
+
+        _txtFixedStudentId.Leave += (s, e) =>
+        {
+            _txtFixedStudentId.Text = (_txtFixedStudentId.Text ?? "").Trim().ToUpperInvariant();
+        };
+        
+        // Bulk add StudentId (paste from Excel)
+        var lblBulkAdd = new Label { Left = 10, Top = 260, Width = 100, Text = "Bulk add:" };
+        _txtFixedStudentIdBulk = new TextBox 
+        { 
+            Left = 110, 
+            Top = 260, 
+            Width = 240, 
+            Height = 60,
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical
+        };
+        _btnFixedAddStudentBulk = new Button { Left = 110, Top = 325, Width = 120, Text = "Add Multiple" };
+        
+        _lstFixedStudents = new ListBox { Left = 110, Top = 350, Width = 240, Height = 50 };
+
+        var lblLecturerId = new Label { Left = 10, Top = 408, Width = 100, Text = "LecturerId:" };
+        _txtFixedLecturerId = new TextBox { Left = 110, Top = 405, Width = 100 };
+        _btnFixedAddLecturer = new Button { Left = 220, Top = 403, Width = 60, Text = "Set" };
+        _btnFixedRemoveLecturer = new Button { Left = 290, Top = 403, Width = 60, Text = "Remove" };
+        _lblFixedLecturer = new Label { Left = 110, Top = 435, Width = 240, Height = 25, Text = "(No lecturer set)" };
+
+        _txtFixedLecturerId.Leave += (s, e) =>
+        {
+            _txtFixedLecturerId.Text = (_txtFixedLecturerId.Text ?? "").Trim().ToUpperInvariant();
+        };
+
+        _btnFixedAddStudent.Click += (s, e) =>
+        {
+            var studentId = (_txtFixedStudentId.Text ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(studentId)) return;
+            var user = _state.UsersInfo.Values.FirstOrDefault(u =>
+                string.Equals(u.StudentId, studentId, StringComparison.OrdinalIgnoreCase));
+            if (user == null)
+            {
+                MessageBox.Show($"StudentId {studentId} not found.", "Not found");
+                return;
+            }
+            if (_fixedStudentUserIds.Contains(user.UserId))
+            {
+                MessageBox.Show($"Student {studentId} already added.", "Duplicate");
+                return;
+            }
+            _fixedStudentUserIds.Add(user.UserId);
+            _lstFixedStudents.Items.Add($"{user.StudentId} - {user.FullName}");
+            _txtFixedStudentId.Text = "";
+        };
+        _btnFixedRemoveStudent.Click += (s, e) =>
+        {
+            if (_lstFixedStudents.SelectedIndex >= 0)
+            {
+                _fixedStudentUserIds.RemoveAt(_lstFixedStudents.SelectedIndex);
+                _lstFixedStudents.Items.RemoveAt(_lstFixedStudents.SelectedIndex);
+            }
+        };
+        
+        // Bulk add StudentId (paste from Excel)
+        _btnFixedAddStudentBulk.Click += (s, e) =>
+        {
+            var bulkText = _txtFixedStudentIdBulk.Text.Trim();
+            if (string.IsNullOrEmpty(bulkText))
+            {
+                MessageBox.Show("Vui lòng paste danh sách StudentId.", "Bulk Add", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Parse StudentIds: split by newline, comma, semicolon, tab
+            var separators = new[] { '\n', '\r', ',', ';', '\t' };
+            var rawIds = bulkText.Split(separators, StringSplitOptions.RemoveEmptyEntries);
+            
+            var added = 0;
+            var duplicates = 0;
+            var notFound = new List<string>();
+
+            foreach (var rawId in rawIds)
+            {
+                // Normalize: trim và uppercase
+                var studentId = rawId.Trim().ToUpper();
+                if (string.IsNullOrEmpty(studentId)) continue;
+
+                // Tìm user theo StudentId
+                var user = _state.UsersInfo.Values.FirstOrDefault(u => 
+                    string.Equals(u.StudentId, studentId, StringComparison.OrdinalIgnoreCase));
+                
+                if (user == null)
+                {
+                    notFound.Add(studentId);
+                    continue;
+                }
+
+                // Check duplicate
+                if (_fixedStudentUserIds.Contains(user.UserId))
+                {
+                    duplicates++;
+                    continue;
+                }
+
+                // Add to list
+                _fixedStudentUserIds.Add(user.UserId);
+                _lstFixedStudents.Items.Add($"{user.StudentId} - {user.FullName}");
+                added++;
+            }
+
+            // Clear textbox
+            _txtFixedStudentIdBulk.Text = "";
+
+            // Show result
+            var msg = $"Đã thêm: {added} sinh viên\n";
+            if (duplicates > 0)
+                msg += $"Trùng lặp: {duplicates}\n";
+            if (notFound.Count > 0)
+                msg += $"Không tìm thấy: {notFound.Count}\n{string.Join(", ", notFound.Take(10))}" + 
+                       (notFound.Count > 10 ? "..." : "");
+
+            MessageBox.Show(msg, "Bulk Add Result", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        };
+        
+        _btnFixedAddLecturer.Click += (s, e) =>
+        {
+            var lecturerId = (_txtFixedLecturerId.Text ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrEmpty(lecturerId)) return;
+            var user = _state.UsersInfo.Values.FirstOrDefault(u =>
+                string.Equals(u.LecturerId, lecturerId, StringComparison.OrdinalIgnoreCase));
+            if (user == null)
+            {
+                MessageBox.Show($"LecturerId {lecturerId} not found.", "Not found");
+                return;
+            }
+            _fixedLecturerUserId = user.UserId;
+            _lblFixedLecturer.Text = $"{user.LecturerId} - {user.FullName}";
+            _txtFixedLecturerId.Text = "";
+        };
+        _btnFixedRemoveLecturer.Click += (s, e) =>
+        {
+            _fixedLecturerUserId = null;
+            _lblFixedLecturer.Text = "(No lecturer set)";
+        };
+
         _btnFixedApply = new Button
         {
             Left = 110,
-            Top = 232,
+            Top = 465,
             Width = 150,
             Text = "Apply fixed schedule"
         };
-        _btnFixedApply.Click += BtnFixedApply_Click;
-
-        grpFixed.Controls.AddRange(new Control[]
+        // Gắn event cho nút Apply fixed schedule
+        if (_btnFixedApply != null)
         {
-        lblSubCode, _txtFixedSubjectCode,
-        lblSubName, _txtFixedSubjectName,
-        lblClass, _txtFixedClass,
-        lblFixedRoom, _cbFixedRoom,
-        lblFrom, _dtFixedFrom, _dtFixedTo,
-        lblDow, _cbFixedDayOfWeek,
-        lblSlots, _cbFixedSlotStart, _cbFixedSlotEnd,
-        _btnFixedApply
+            _btnFixedApply.Click += (s, e) =>
+            {
+                // Lấy dữ liệu từ UI
+                var subjectCode = _txtFixedSubjectCode?.Text.Trim() ?? "";
+                var subjectName = _txtFixedSubjectName?.Text.Trim() ?? "";
+                var className = _txtFixedClass?.Text.Trim() ?? "";
+                var roomId = _cbFixedRoom?.SelectedItem?.ToString() ?? "";
+                var from = _dtFixedFrom?.Value.Date ?? DateTime.Today;
+                var to = _dtFixedTo?.Value.Date ?? DateTime.Today;
+                var dowStr = _cbFixedDayOfWeek?.SelectedItem?.ToString() ?? "Monday";
+                var slotStartId = _cbFixedSlotStart?.SelectedItem?.ToString() ?? "S1";
+                var slotEndId = _cbFixedSlotEnd?.SelectedItem?.ToString() ?? "S1";
+                var note = ""; // Có thể lấy từ UI nếu có
+                var lecturerId = _fixedLecturerUserId ?? "";
+                var studentIds = _fixedStudentUserIds.ToList();
+
+                if (!Enum.TryParse<DayOfWeek>(dowStr, out var dow))
+                {
+                    MessageBox.Show($"DayOfWeek không hợp lệ: {dowStr}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+
+                // Gọi ServerState để apply fixed schedule
+                var (ok, msg, created, conflict) = _state.ApplyFixedSchedule(
+                    subjectCode, subjectName, className, roomId,
+                    from, to, dow, slotStartId, slotEndId, studentIds, lecturerId, note);
+                if (ok)
+                {
+                    MessageBox.Show($"Tạo thành công {created} buổi học. Xung đột: {conflict}", "Thành công", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    // Refresh grid để hiển thị Fixed Schedule mới tạo
+                    RefreshFixedSchedulesGrid();
+                }
+                else
+                {
+                    MessageBox.Show($"Không tạo được lịch: {msg}", "Lỗi", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
+        }
+
+        // ===== Section: Danh sách Fixed Schedules đã tạo =====
+        var lblFixedList = new Label 
+        { 
+            Left = 10, 
+            Top = 500, 
+            Width = 200, 
+            Text = "Danh sách Fixed Schedules:",
+            Font = new Font(Font, FontStyle.Bold)
+        };
+        
+        _btnDeleteFixedSchedule = new Button
+        {
+            Left = 220,
+            Top = 497,
+            Width = 70,
+            Text = "Delete"
+        };
+        _btnDeleteFixedSchedule.Click += BtnDeleteFixedSchedule_Click;
+        
+        _gridFixedSchedules = new DataGridView
+        {
+            Left = 10,
+            Top = 530,
+            Width = 360,
+            Height = 200,
+            ReadOnly = true,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            SelectionMode = DataGridViewSelectionMode.FullRowSelect
+        };
+
+        pnlFixedForm.Controls.AddRange(new Control[]
+        {
+            lblSubCode, _txtFixedSubjectCode,
+            lblSubName, _txtFixedSubjectName,
+            lblClass, _txtFixedClass,
+            lblFixedRoom, _cbFixedRoom,
+            lblFrom, _dtFixedFrom, _dtFixedTo,
+            lblDow, _cbFixedDayOfWeek,
+            lblSlots, _cbFixedSlotStart, lblSlotTo, _cbFixedSlotEnd,
+            lblStudentId, _txtFixedStudentId, _btnFixedAddStudent, _btnFixedRemoveStudent,
+            lblBulkAdd, _txtFixedStudentIdBulk, _btnFixedAddStudentBulk,
+            _lstFixedStudents,
+            lblLecturerId, _txtFixedLecturerId, _btnFixedAddLecturer, _btnFixedRemoveLecturer, _lblFixedLecturer,
+            _btnFixedApply
         });
 
+        var pnlFixedListHeader = new Panel
+        {
+            Dock = DockStyle.Top,
+            Height = 34
+        };
+        lblFixedList.Dock = DockStyle.Left;
+        lblFixedList.TextAlign = ContentAlignment.MiddleLeft;
+        _btnDeleteFixedSchedule.Dock = DockStyle.Right;
+        _gridFixedSchedules.Dock = DockStyle.Fill;
+        _gridFixedSchedules.Top = 0;
+        _gridFixedSchedules.Left = 0;
+
+        pnlFixedListHeader.Controls.Add(_btnDeleteFixedSchedule);
+        pnlFixedListHeader.Controls.Add(lblFixedList);
+        pnlFixedList.Controls.Add(_gridFixedSchedules);
+        pnlFixedList.Controls.Add(pnlFixedListHeader);
+        
 
         _btnRoomAdd.Click += BtnRoomAdd_Click;
         _btnRoomUpdate.Click += BtnRoomUpdate_Click;
         _btnRoomDelete.Click += BtnRoomDelete_Click;
-        // SAU KHI BUILD XONG: load list phòng
         RefreshRoomGrid();
         _gridRooms.SelectionChanged += GridRooms_SelectionChanged;
-
+        
+        // Load danh sách Fixed Schedules
+        RefreshFixedSchedulesGrid();
+    }
+    // Fix SplitContainer splitter crash: clamp SplitterDistance
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_mainSplit != null)
+        {
+            try
+            {
+                TrySetSplitterDistance(_mainSplit, _mainSplit.SplitterDistance);
+            }
+            catch { /* ignore */ }
+        }
     }
 
     private void RefreshRoomGrid(string? filterRoomId = null)
@@ -1125,10 +2061,12 @@ public class Form1 : Form
         _gridRooms.Columns.Add(colCapacity);
 
         _gridRooms.DataSource = rooms;
+        ApplyRoomMgmtGridDisabledStyle();
 
         // ====== FILL COMBO FIXED ROOM (dùng ALL ROOMS, không filter) ======
         if (_cbFixedRoom != null)
         {
+            ConfigureRoomComboBox(_cbFixedRoom);
             var current = _cbFixedRoom.SelectedItem?.ToString();
 
             _cbFixedRoom.Items.Clear();
@@ -1145,11 +2083,14 @@ public class Form1 : Form
             {
                 _cbFixedRoom.SelectedIndex = 0;
             }
+
+            EnsureRoomComboSelectedEnabled(_cbFixedRoom);
         }
 
         // ====== FILL COMBO "Theo phòng" (_cbRoomFilter) ======
         if (_cbRoomFilter != null)
         {
+            ConfigureRoomComboBox(_cbRoomFilter);
             var currentRoom = _cbRoomFilter.SelectedItem?.ToString();
 
             _cbRoomFilter.Items.Clear();
@@ -1166,6 +2107,31 @@ public class Form1 : Form
             {
                 _cbRoomFilter.SelectedIndex = 0;
             }
+
+            EnsureRoomComboSelectedEnabled(_cbRoomFilter);
+        }
+
+        if (_cbForceRoom != null)
+        {
+            ConfigureRoomComboBox(_cbForceRoom);
+            var current = _cbForceRoom.SelectedItem?.ToString();
+
+            _cbForceRoom.Items.Clear();
+            foreach (var r in allRooms)
+            {
+                _cbForceRoom.Items.Add(r.RoomId);
+            }
+
+            if (!string.IsNullOrEmpty(current) && _cbForceRoom.Items.Contains(current))
+            {
+                _cbForceRoom.SelectedItem = current;
+            }
+            else if (_cbForceRoom.Items.Count > 0)
+            {
+                _cbForceRoom.SelectedIndex = 0;
+            }
+
+            EnsureRoomComboSelectedEnabled(_cbForceRoom);
         }
     }
 
@@ -1287,6 +2253,10 @@ public class Form1 : Form
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "UserId:" });
         _txtUserId = new TextBox { Left = 100, Top = curY - 3, Width = 180 };
         grpUser.Controls.Add(_txtUserId);
+        _txtUserId.Leave += (s, e) =>
+        {
+            _txtUserId.Text = (_txtUserId.Text ?? "").Trim().ToUpperInvariant();
+        };
 
         curY += 30;
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "Full name:" });
@@ -1311,16 +2281,28 @@ public class Form1 : Form
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "StudentId:" });
         _txtUserStudentId = new TextBox { Left = 100, Top = curY - 3, Width = 180 };
         grpUser.Controls.Add(_txtUserStudentId);
+        _txtUserStudentId.Leave += (s, e) =>
+        {
+            _txtUserStudentId.Text = (_txtUserStudentId.Text ?? "").Trim().ToUpperInvariant();
+        };
 
         curY += 30;
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "LecturerId:" });
         _txtUserLecturerId = new TextBox { Left = 100, Top = curY - 3, Width = 180 };
         grpUser.Controls.Add(_txtUserLecturerId);
+        _txtUserLecturerId.Leave += (s, e) =>
+        {
+            _txtUserLecturerId.Text = (_txtUserLecturerId.Text ?? "").Trim().ToUpperInvariant();
+        };
 
         curY += 30;
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "Class:" });
         _txtUserClass = new TextBox { Left = 100, Top = curY - 3, Width = 180 };
         grpUser.Controls.Add(_txtUserClass);
+        _txtUserClass.Leave += (s, e) =>
+        {
+            _txtUserClass.Text = (_txtUserClass.Text ?? "").Trim().ToUpperInvariant();
+        };
 
         curY += 30;
         grpUser.Controls.Add(new Label { Left = 10, Top = curY, Width = 80, Text = "Faculty:" });
@@ -1462,6 +2444,7 @@ public class Form1 : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             Width = 100
         };
+        ConfigureRoomComboBox(_cbBookingRoom);
         _cbBookingRoom.Items.Add("ALL");
         foreach (var roomId in _state.RoomsInfo.Keys.OrderBy(r => r))
             _cbBookingRoom.Items.Add(roomId);
@@ -2195,7 +3178,7 @@ public class Form1 : Form
             Left = 560,
             Top = 10,
             Width = 300,
-            Height = 160
+            Height = 185
         };
         _tabSettings.Controls.Add(grpGeneral);
 
@@ -2216,10 +3199,18 @@ public class Form1 : Form
             Value = 15
         };
 
-        _chkSendEmailForce = new CheckBox
+        _chkSendEmailGrant = new CheckBox
         {
             Left = 10,
             Top = 55,
+            Width = 260,
+            Text = "Send email on GRANT"
+        };
+
+        _chkSendEmailForce = new CheckBox
+        {
+            Left = 10,
+            Top = 80,
             Width = 260,
             Text = "Send email on FORCE_GRANT/RELEASE"
         };
@@ -2227,7 +3218,7 @@ public class Form1 : Form
         _chkSendEmailNoShow = new CheckBox
         {
             Left = 10,
-            Top = 80,
+            Top = 105,
             Width = 260,
             Text = "Send email on NO_SHOW"
         };
@@ -2235,7 +3226,7 @@ public class Form1 : Form
         _chkNotifyClient = new CheckBox
         {
             Left = 10,
-            Top = 105,
+            Top = 130,
             Width = 260,
             Text = "Send notification to client"
         };
@@ -2243,7 +3234,7 @@ public class Form1 : Form
         grpGeneral.Controls.AddRange(new Control[]
         {
             lblDeadline, _numCheckinDeadlineMinutes,
-            _chkSendEmailForce, _chkSendEmailNoShow, _chkNotifyClient
+            _chkSendEmailGrant, _chkSendEmailForce, _chkSendEmailNoShow, _chkNotifyClient
         });
 
         // ===== Group: SMTP settings =====
@@ -2368,6 +3359,43 @@ public class Form1 : Form
             _state.BroadcastNow();
         };
 
+        // ===== Group: Dangerous Operations =====
+        var grpDangerous = new GroupBox
+        {
+            Text = "",
+            Left = 560,
+            Top = 580,
+            Width = 300,
+            Height = 100,
+            ForeColor = Color.Red
+        };
+        _tabSettings.Controls.Add(grpDangerous);
+
+        var lblWarning = new Label
+        {
+            Left = 10,
+            Top = 25,
+            Width = 280,
+            Height = 30,
+            Text = " WARNING: This will delete ALL data!\n(Bookings, Fixed Schedules, Locks)",
+            ForeColor = Color.Red
+        };
+        grpDangerous.Controls.Add(lblWarning);
+
+        _btnResetAllData = new Button
+        {
+            Text = " Reset All Data",
+            Left = 10,
+            Top = 60,
+            Width = 280,
+            Height = 30,
+            BackColor = Color.FromArgb(255, 100, 100),
+            ForeColor = Color.White,
+            Font = new Font(Font, FontStyle.Bold)
+        };
+        _btnResetAllData.Click += BtnResetAllData_Click;
+        grpDangerous.Controls.Add(_btnResetAllData);
+
         // ===== Load dữ liệu từ ServerState vào UI =====
         LoadSettingsToUi();
     }
@@ -2417,6 +3445,7 @@ public class Form1 : Form
         else
             _numCheckinDeadlineMinutes.Value = 15;
 
+        _chkSendEmailGrant.Checked = s.SendEmailOnGrant;
         _chkSendEmailForce.Checked = s.SendEmailOnForceGrantRelease;
         _chkSendEmailNoShow.Checked = s.SendEmailOnNoShow;
         _chkNotifyClient.Checked = s.SendNotificationToClient;
@@ -2476,6 +3505,7 @@ public class Form1 : Form
 
         // 2) general
         newSettings.CheckinDeadlineMinutes = (int)_numCheckinDeadlineMinutes.Value;
+        newSettings.SendEmailOnGrant = _chkSendEmailGrant.Checked;
         newSettings.SendEmailOnForceGrantRelease = _chkSendEmailForce.Checked;
         newSettings.SendEmailOnNoShow = _chkSendEmailNoShow.Checked;
         newSettings.SendNotificationToClient = _chkNotifyClient.Checked;
@@ -2496,6 +3526,62 @@ public class Form1 : Form
             MessageBoxButtons.OK,
             MessageBoxIcon.Information
         );
+    }
+
+    private void BtnResetAllData_Click(object? sender, EventArgs e)
+    {
+        var confirm = MessageBox.Show(
+            this,
+            "⚠️ WARNING: This will permanently delete ALL data:\n\n" +
+            "• All bookings (QUEUED, APPROVED, IN_USE, COMPLETED, etc.)\n" +
+            "• All fixed schedules\n" +
+            "• All event locks\n\n" +
+            "This action CANNOT be undone!\n\n" +
+            "Are you absolutely sure you want to continue?",
+            "⚠️ Confirm Reset All Data",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning,
+            MessageBoxDefaultButton.Button2
+        );
+
+        if (confirm != DialogResult.Yes)
+            return;
+
+        // Double confirmation
+        var doubleConfirm = MessageBox.Show(
+            this,
+            "⚠️ FINAL WARNING!\n\n" +
+            "This is your last chance to cancel.\n\n" +
+            "Click YES to permanently delete all data.\n" +
+            "Click NO to cancel.",
+            "⚠️ Final Confirmation",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Stop,
+            MessageBoxDefaultButton.Button2
+        );
+
+        if (doubleConfirm != DialogResult.Yes)
+            return;
+
+        var log = new StringWriter();
+        _state.ResetAllData(log);
+        Log(log.ToString());
+
+        MessageBox.Show(
+            this,
+            "✅ All data has been reset successfully!\n\n" +
+            "• All bookings cleared\n" +
+            "• All fixed schedules deleted\n" +
+            "• All slots unlocked\n" +
+            "• All clients notified",
+            "Reset Complete",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information
+        );
+
+        // Refresh UI
+        RefreshSlotsSafe();
+        RefreshFixedSchedulesGrid();
     }
 
 
@@ -2632,6 +3718,13 @@ public class Form1 : Form
                                     $"{user.LecturerId}|{user.Faculty}\n";
 
                                 await SendAsync(stream, response);
+
+                                // ⭐ Push fixed schedule ngay sau khi login thành công
+                                _state.PushMyFixedSchedule(currentUserId);
+
+                                // ⭐ Flush các notification bị lỡ khi user offline
+                                _state.FlushPendingNotifications(currentUserId, new UiLogger(this));
+
                                 break;
                             }
 
@@ -2679,7 +3772,8 @@ public class Form1 : Form
 
                         case "REQUEST":
                             {
-                                if (parts.Length < 5)
+                                // REQUEST|UserId|RoomId|SlotId|Date|Purpose
+                                if (parts.Length < 6)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid REQUEST format\n");
                                     break;
@@ -2688,7 +3782,8 @@ public class Form1 : Form
                                 var userIdInMsg = parts[1];
                                 var roomId = parts[2];
                                 var slotId = parts[3];
-                                var purpose = parts[4];
+                                var dateStr = parts[4];
+                                var purpose = parts[5];
 
                                 // Bắt buộc phải LOGIN trước
                                 if (currentUserId == null)
@@ -2705,19 +3800,23 @@ public class Form1 : Form
                                 }
 
                                 // Truyền clientId (GUID) xuống ServerState
-                                _state.HandleRequest(clientId, roomId, slotId, purpose, stream, new UiLogger(this));
+                                _state.HandleRequest(clientId, roomId, slotId, dateStr, purpose, stream, new UiLogger(this));
                                 break;
                             }
 
                         case "RELEASE":
                             {
-                                if (parts.Length != 4)
+                                // RELEASE|UserId|RoomId|SlotId|Date
+                                if (parts.Length != 5)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid RELEASE format\n");
                                     break;
                                 }
 
                                 var userIdInMsg = parts[1];
+                                var roomId = parts[2];
+                                var slotId = parts[3];
+                                var dateStr = parts[4];
 
                                 if (currentUserId == null)
                                 {
@@ -2731,14 +3830,14 @@ public class Form1 : Form
                                     break;
                                 }
 
-                                _state.HandleRelease(clientId, parts[2], parts[3], stream, new UiLogger(this));
+                                _state.HandleRelease(clientId, roomId, slotId, dateStr, stream, new UiLogger(this));
                                 break;
                             }
 
                         case "REQUEST_RANGE":
                             {
-                                // REQUEST_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                                if (parts.Length < 6)
+                                // REQUEST_RANGE|UserId|RoomId|SlotStart|SlotEnd|Date|Purpose
+                                if (parts.Length < 7)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid REQUEST_RANGE\n");
                                     break;
@@ -2748,7 +3847,8 @@ public class Form1 : Form
                                 var roomId = parts[2];
                                 var slotStart = parts[3];
                                 var slotEnd = parts[4];
-                                var purpose = parts[5];
+                                var dateStr = parts[5];
+                                var purpose = parts[6];
 
 
                                 if (currentUserId == null)
@@ -2763,14 +3863,14 @@ public class Form1 : Form
                                     break;
                                 }
 
-                                _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, purpose, stream, new UiLogger(this));
+                                _state.HandleRequestRange(clientId, roomId, slotStart, slotEnd, dateStr, purpose, stream, new UiLogger(this));
                                 break;
                             }
 
                         case "RELEASE_RANGE":
                             {
-                                // RELEASE_RANGE|UserId|RoomId|SlotStart|SlotEnd
-                                if (parts.Length < 5)
+                                // RELEASE_RANGE|UserId|RoomId|SlotStart|SlotEnd|Date
+                                if (parts.Length < 6)
                                 {
                                     await SendAsync(stream, "INFO|ERROR|Invalid RELEASE_RANGE\n");
                                     break;
@@ -2780,6 +3880,7 @@ public class Form1 : Form
                                 var roomId = parts[2];
                                 var slotStart = parts[3];
                                 var slotEnd = parts[4];
+                                var dateStr = parts[5];
 
                                 if (currentUserId == null)
                                 {
@@ -2798,6 +3899,7 @@ public class Form1 : Form
                                     roomId,
                                     slotStart,
                                     slotEnd,
+                                    dateStr,
                                     stream,
                                     new UiLogger(this));
 
@@ -2823,6 +3925,20 @@ public class Form1 : Form
                         case "PING":
                             await SendAsync(stream, "PONG\n");
                             break;
+                        case "GET_FIXED_SESSIONS":
+                            {
+                                // GET_FIXED_SESSIONS|userId|fromDate|toDate
+                                if (parts.Length < 4)
+                                {
+                                    await SendAsync(stream, "ERROR|INVALID_ARGS\n");
+                                    break;
+                                }
+                                var userId = parts[1];
+                                var fromDate = parts[2];
+                                var toDate = parts[3];
+                                _state.HandleGetFixedSessions(clientId, userId, fromDate, toDate, stream, new UiLogger(this));
+                                break;
+                            }
                         case "GET_HOME_DATA":
                             {
                                 // Format client gửi: GET_HOME_DATA|<UserId>
@@ -2843,6 +3959,13 @@ public class Form1 : Form
                                 // Mỗi booking -> 1 dòng SCHEDULE
                                 foreach (var b in bookingsToday)
                                 {
+                                    var st = (b.Status ?? "").Trim();
+                                    if (string.Equals(st, "CANCELLED", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(st, "QUEUED", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        continue;
+                                    }
+
                                     // Col1: TimeRange
                                     // Col2: RoomId
                                     // Col3: Môn/Mục đích
@@ -2864,13 +3987,11 @@ public class Form1 : Form
                                     await SendAsync(stream, lineSchedule + "\n");
                                 }
 
-                                // Thông báo demo từ booking hôm nay (tạm thời)
-                                foreach (var b in bookingsToday.Take(3))
+                                var homeNoti = _state.GetHomeNotifications(userId, max: 20);
+                                foreach (var notiMsg in homeNoti)
                                 {
-                                    // ⚠️ Đừng dùng lại tên biến msg để khỏi trùng với msg ở ngoài
-                                    var noti =
-                                        $"NOTI|Booking {b.RoomId} {b.TimeRange} ngày {b.Date:dd/MM/yyyy} - trạng thái: {b.Status}";
-                                    await SendAsync(stream, noti + "\n");
+                                    if (string.IsNullOrWhiteSpace(notiMsg)) continue;
+                                    await SendAsync(stream, $"NOTI|{notiMsg}\n");
                                 }
 
                                 await SendAsync(stream, "HOME_DATA_END\n");
@@ -3237,27 +4358,149 @@ public class Form1 : Form
 
     private void RefreshSlotsSafe()
     {
+        Console.WriteLine($"[REFRESH_SLOTS] Called at {DateTime.Now:HH:mm:ss.fff}, InvokeRequired={InvokeRequired}");
         if (InvokeRequired)
         {
-            BeginInvoke(new Action(RefreshSlots));
+            // Dùng Invoke thay vì BeginInvoke để update ngay lập tức, không delay
+            Console.WriteLine($"[REFRESH_SLOTS] Invoking to UI thread");
+            Invoke(new Action(RefreshSlots));
+            Console.WriteLine($"[REFRESH_SLOTS] Invoke completed at {DateTime.Now:HH:mm:ss.fff}");
             return;
         }
         RefreshSlots();
+        Console.WriteLine($"[REFRESH_SLOTS] RefreshSlots completed at {DateTime.Now:HH:mm:ss.fff}");
     }
 
     private void RefreshSlots()
     {
+        Console.WriteLine($"[REFRESH_SLOTS][DETAIL] Starting RefreshSlots at {DateTime.Now:HH:mm:ss.fff}");
         var summaries = _state.GetAllSlotSummaries();
-        _gridSlots.DataSource = null;
-        _gridSlots.DataSource = summaries;
+        Console.WriteLine($"[REFRESH_SLOTS][DETAIL] Got {summaries.Count} summaries at {DateTime.Now:HH:mm:ss.fff}");
+
+        string? selectedRoomId = null;
+        string? selectedSlotId = null;
+        if (_gridSlots.CurrentRow?.DataBoundItem is SlotSummary selected)
+        {
+            selectedRoomId = selected.RoomId;
+            selectedSlotId = selected.SlotId;
+        }
+
+        _suppressSlotSelectionChanged = true;
+        try
+        {
+            _gridSlotsBinding.RaiseListChangedEvents = false;
+            _gridSlotsBinding.Clear();
+            foreach (var s in summaries)
+                _gridSlotsBinding.Add(s);
+            _gridSlotsBinding.RaiseListChangedEvents = true;
+            _gridSlotsSource.ResetBindings(false);
+
+            ApplySlotGridDisabledRoomStyle();
+
+            Console.WriteLine($"[REFRESH_SLOTS][DETAIL] Updated BindingList at {DateTime.Now:HH:mm:ss.fff}");
+        }
+        finally
+        {
+            _suppressSlotSelectionChanged = false;
+        }
 
         if (_gridSlots.Rows.Count > 0 && _gridSlots.CurrentRow == null)
         {
             _gridSlots.Rows[0].Selected = true;
         }
 
+        if (!string.IsNullOrEmpty(selectedRoomId) && !string.IsNullOrEmpty(selectedSlotId))
+        {
+            foreach (DataGridViewRow r in _gridSlots.Rows)
+            {
+                if (r.DataBoundItem is SlotSummary ss &&
+                    string.Equals(ss.RoomId, selectedRoomId, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(ss.SlotId, selectedSlotId, StringComparison.OrdinalIgnoreCase))
+                {
+                    _gridSlots.CurrentCell = r.Cells[0];
+                    r.Selected = true;
+                    break;
+                }
+            }
+        }
+
         UpdateQueueViewForSelected();
         UpdateCheckinPanel();
+
+        if (_tabLeft != null && _tabLeftByRoom != null && _tabLeft.SelectedTab == _tabLeftByRoom &&
+            _gridRoomDaily != null && _cbRoomFilter != null)
+        {
+            var roomId = _cbRoomFilter.SelectedItem?.ToString();
+            if (!string.IsNullOrWhiteSpace(roomId))
+            {
+                string? selectedDailySlotId = null;
+                if (_gridRoomDaily.CurrentRow?.DataBoundItem is SlotSummary dailySelected)
+                    selectedDailySlotId = dailySelected.SlotId;
+
+                var roomDaily = summaries
+                    .Where(s => string.Equals(s.RoomId, roomId, StringComparison.OrdinalIgnoreCase))
+                    .OrderBy(s =>
+                    {
+                        var t = (s.SlotId ?? "").Trim().ToUpperInvariant();
+                        if (t.StartsWith("S") && int.TryParse(t.Substring(1), out var idx))
+                            return idx;
+                        return int.MaxValue;
+                    })
+                    .ToList();
+
+                _gridRoomDaily.AutoGenerateColumns = true;
+                _gridRoomDaily.DataSource = null;
+                _gridRoomDaily.DataSource = roomDaily;
+
+                if (!string.IsNullOrWhiteSpace(selectedDailySlotId))
+                {
+                    foreach (DataGridViewRow r in _gridRoomDaily.Rows)
+                    {
+                        if (r.DataBoundItem is SlotSummary ss &&
+                            string.Equals(ss.SlotId, selectedDailySlotId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _gridRoomDaily.CurrentCell = r.Cells[0];
+                            r.Selected = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Console.WriteLine($"[REFRESH_SLOTS][DETAIL] Completed RefreshSlots at {DateTime.Now:HH:mm:ss.fff}");
+    }
+
+    private void GridRoomDaily_SelectionChanged(object? sender, EventArgs e)
+    {
+        if (_gridRoomDaily == null || _gridSlots == null)
+            return;
+
+        if (_gridRoomDaily.CurrentRow?.DataBoundItem is not SlotSummary daily)
+            return;
+
+        var roomId = daily.RoomId;
+        var slotId = daily.SlotId;
+        if (string.IsNullOrWhiteSpace(roomId) || string.IsNullOrWhiteSpace(slotId))
+            return;
+
+        if (_dtRoomFilterDate != null && _dtDate != null)
+        {
+            var desired = _dtRoomFilterDate.Value.Date;
+            if (_dtDate.Value.Date != desired)
+                _dtDate.Value = desired;
+        }
+
+        foreach (DataGridViewRow r in _gridSlots.Rows)
+        {
+            if (r.DataBoundItem is SlotSummary ss &&
+                string.Equals(ss.RoomId, roomId, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(ss.SlotId, slotId, StringComparison.OrdinalIgnoreCase))
+            {
+                _gridSlots.CurrentCell = r.Cells[0];
+                r.Selected = true;
+                break;
+            }
+        }
     }
 
     // private void GridSlots_SelectionChanged(object? sender, EventArgs e)
@@ -3369,6 +4612,54 @@ public class Form1 : Form
     }
     private void GridSlots_SelectionChanged(object? sender, EventArgs e)
     {
+        if (_suppressSlotSelectionChanged)
+            return;
+
+        if (_gridSlots.CurrentRow?.DataBoundItem is SlotSummary ss)
+        {
+            if (IsRoomDisabledUi(ss.RoomId))
+            {
+                _suppressSlotSelectionChanged = true;
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(_lastEnabledSlotRoomId) && !string.IsNullOrWhiteSpace(_lastEnabledSlotSlotId))
+                    {
+                        foreach (DataGridViewRow r in _gridSlots.Rows)
+                        {
+                            if (r.DataBoundItem is SlotSummary prev &&
+                                string.Equals(prev.RoomId, _lastEnabledSlotRoomId, StringComparison.OrdinalIgnoreCase) &&
+                                string.Equals(prev.SlotId, _lastEnabledSlotSlotId, StringComparison.OrdinalIgnoreCase))
+                            {
+                                _gridSlots.CurrentCell = r.Cells[0];
+                                r.Selected = true;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (DataGridViewRow r in _gridSlots.Rows)
+                        {
+                            if (r.DataBoundItem is SlotSummary prev && !IsRoomDisabledUi(prev.RoomId))
+                            {
+                                _gridSlots.CurrentCell = r.Cells[0];
+                                r.Selected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    _suppressSlotSelectionChanged = false;
+                }
+                return;
+            }
+
+            _lastEnabledSlotRoomId = ss.RoomId;
+            _lastEnabledSlotSlotId = ss.SlotId;
+        }
+
         UpdateQueueViewForSelected();
         UpdateCheckinPanel();
     }
@@ -3408,6 +4699,33 @@ public class Form1 : Form
         // Gọi ServerState để lấy booking hiện tại của slot
         var date = _dtDate.Value.Date;
         var booking = _state.GetCurrentBookingForSlot(date, roomId, slotId);
+
+        // Lấy trạng thái slot
+        var dateKey = date.ToString("yyyy-MM-dd");
+        var slotState = _state.GetSlotState(dateKey, roomId, slotId);
+        if (slotState != null && slotState.IsEventLocked)
+        {
+            // Nếu là event lock, hiển thị thông tin FixedSession (nếu có)
+            var fixedSession = _state.GetFixedSessionForSlot(date, roomId, slotId);
+            if (fixedSession != null)
+            {
+                _lblBookingId.Text = $"FixedSessionId: {fixedSession.SessionId}";
+                _lblBookingUserId.Text = $"Lecturer: {fixedSession.LecturerUserId}";
+                _lblBookingRoomId.Text = $"RoomId: {fixedSession.RoomId}";
+                _lblBookingDate.Text = $"Date: {dateKey}";
+                _lblBookingSlotStartId.Text = $"SlotStartId: {fixedSession.SlotStartId}";
+                _lblBookingSlotEndId.Text = $"SlotEndId: {fixedSession.SlotEndId}";
+                _lblBookingIsRange.Text = $"IsRangeBooking: true (Fixed)";
+                _lblBookingStatus.Text = $"Status: EVENT_LOCKED";
+                _lblBookingPurpose.Text = $"Note: {fixedSession.Note}";
+                _lblBookingCreatedAt.Text = $"CreatedAt: {fixedSession.CreatedAt:yyyy-MM-dd HH:mm:ss}";
+                _lblBookingUpdatedAt.Text = $"UpdatedAt: {fixedSession.UpdatedAt:yyyy-MM-dd HH:mm:ss}";
+                _lblBookingUser.Text = $"Fixed schedule: {fixedSession.SubjectCode} - {fixedSession.SubjectName} ({fixedSession.Class})";
+                _btnCheckIn.Enabled = false;
+                _btnComplete.Enabled = false;
+                return;
+            }
+        }
 
         if (booking == null)
         {
@@ -3724,6 +5042,9 @@ public class Form1 : Form
             return;
         }
 
+        targetUserId = targetUserId.ToUpperInvariant();
+        _txtForceUserId.Text = targetUserId;
+
         var date = _dtDate.Value.Date;
         var logger = new UiLogger(this);
 
@@ -3775,18 +5096,15 @@ public class Form1 : Form
     }
     private void BtnForceGrantRange_Click(object? sender, EventArgs e)
     {
-        if (_gridSlots.CurrentRow == null)
+        var roomId = _cbForceRoom.SelectedItem?.ToString();
+        if (string.IsNullOrEmpty(roomId) && _gridSlots.CurrentRow != null)
         {
-            MessageBox.Show(this, "Hãy chọn 1 phòng/ca bất kỳ trong bảng Slot (dùng để lấy RoomId & ngày).",
-                "Force GRANT RANGE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            var row = _gridSlots.CurrentRow;
+            roomId = row.Cells["RoomId"].Value?.ToString();
         }
-
-        var row = _gridSlots.CurrentRow;
-        var roomId = row.Cells["RoomId"].Value?.ToString();
         if (string.IsNullOrEmpty(roomId))
         {
-            MessageBox.Show(this, "Dòng đang chọn không hợp lệ (RoomId rỗng).",
+            MessageBox.Show(this, "Hãy chọn phòng cho range.",
                 "Force GRANT RANGE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -3798,6 +5116,9 @@ public class Form1 : Form
                 "Force GRANT RANGE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+
+        targetUserId = targetUserId.ToUpperInvariant();
+        _txtForceUserId.Text = targetUserId;
 
         var slotStart = _cbForceSlotStart.SelectedItem?.ToString();
         var slotEnd = _cbForceSlotEnd.SelectedItem?.ToString();
@@ -3835,18 +5156,15 @@ public class Form1 : Form
 
     private void BtnForceReleaseRange_Click(object? sender, EventArgs e)
     {
-        if (_gridSlots.CurrentRow == null)
+        var roomId = _cbForceRoom.SelectedItem?.ToString();
+        if (string.IsNullOrEmpty(roomId) && _gridSlots.CurrentRow != null)
         {
-            MessageBox.Show(this, "Hãy chọn 1 phòng/ca bất kỳ trong bảng Slot (dùng để lấy RoomId & ngày).",
-                "Force RELEASE RANGE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            var row = _gridSlots.CurrentRow;
+            roomId = row.Cells["RoomId"].Value?.ToString();
         }
-
-        var row = _gridSlots.CurrentRow;
-        var roomId = row.Cells["RoomId"].Value?.ToString();
         if (string.IsNullOrEmpty(roomId))
         {
-            MessageBox.Show(this, "Dòng đang chọn không hợp lệ (RoomId rỗng).",
+            MessageBox.Show(this, "Hãy chọn phòng cho range.",
                 "Force RELEASE RANGE", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -4032,6 +5350,150 @@ public class Form1 : Form
         RefreshRoomGrid();
     }
 
+    private void RefreshFixedSchedulesGrid()
+    {
+        if (_gridFixedSchedules == null) return;
+
+        var allSessions = _state.GetAllFixedSessions();
+
+        // Group sessions by SubjectCode+RoomId+SlotStartId+SlotEndId để tránh duplicate
+        // Mỗi group chỉ hiển thị 1 row với DateFrom = min date, DateTo = max date
+        var grouped = allSessions
+            .GroupBy(s => new { s.SubjectCode, s.SubjectName, s.Class, s.RoomId, s.SlotStartId, s.SlotEndId })
+            .Select(g => new
+            {
+                SubjectCode = g.Key.SubjectCode,
+                SubjectName = g.Key.SubjectName,
+                Class = g.Key.Class,
+                RoomId = g.Key.RoomId,
+                SlotRange = $"{g.Key.SlotStartId}-{g.Key.SlotEndId}",
+                DateFrom = g.Min(s => s.DateFrom),
+                DateTo = g.Max(s => s.DateTo),
+                SessionIds = g.Select(s => s.SessionId).ToList() // Lưu tất cả SessionIds để xoá
+            })
+            .ToList();
+
+        _gridFixedSchedules.AutoGenerateColumns = false;
+        _gridFixedSchedules.Columns.Clear();
+
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "SubjectCode",
+            HeaderText = "Subject",
+            Width = 70
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "SubjectName",
+            HeaderText = "Name",
+            Width = 100
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "Class",
+            HeaderText = "Class",
+            Width = 60
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "RoomId",
+            HeaderText = "Room",
+            Width = 50
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "SlotRange",
+            HeaderText = "Slots",
+            Width = 60
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "DateFrom",
+            HeaderText = "From",
+            Width = 80
+        });
+        _gridFixedSchedules.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            DataPropertyName = "DateTo",
+            HeaderText = "To",
+            Width = 80
+        });
+
+        _gridFixedSchedules.DataSource = grouped;
+        // Log chỉ khi _txtLog đã được khởi tạo
+        if (_txtLog != null)
+            Log($"[UI] Loaded {grouped.Count} unique fixed schedules (from {allSessions.Count} sessions).");
+    }
+
+    private void BtnDeleteFixedSchedule_Click(object? sender, EventArgs e)
+    {
+        if (_gridFixedSchedules.CurrentRow == null)
+        {
+            MessageBox.Show(this, "Vui lòng chọn Fixed Schedule cần xoá.", "Delete Fixed Schedule",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        // DataBoundItem là anonymous type với SessionIds (List<Guid>)
+        var item = _gridFixedSchedules.CurrentRow.DataBoundItem;
+        if (item == null) return;
+
+        // Dùng reflection để lấy properties từ anonymous type
+        var type = item.GetType();
+        var subjectCode = type.GetProperty("SubjectCode")?.GetValue(item)?.ToString() ?? "";
+        var subjectName = type.GetProperty("SubjectName")?.GetValue(item)?.ToString() ?? "";
+        var className = type.GetProperty("Class")?.GetValue(item)?.ToString() ?? "";
+        var roomId = type.GetProperty("RoomId")?.GetValue(item)?.ToString() ?? "";
+        var slotRange = type.GetProperty("SlotRange")?.GetValue(item)?.ToString() ?? "";
+        var dateFrom = type.GetProperty("DateFrom")?.GetValue(item)?.ToString() ?? "";
+        var dateTo = type.GetProperty("DateTo")?.GetValue(item)?.ToString() ?? "";
+        var sessionIds = type.GetProperty("SessionIds")?.GetValue(item) as List<Guid>;
+
+        if (sessionIds == null || sessionIds.Count == 0)
+        {
+            MessageBox.Show(this, "Không tìm thấy SessionIds.", "Delete Fixed Schedule",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        var confirm = MessageBox.Show(
+            this,
+            $"Bạn chắc chắn muốn xoá Fixed Schedule:\n" +
+            $"Subject: {subjectCode} - {subjectName}\n" +
+            $"Class: {className}\n" +
+            $"Room: {roomId}\n" +
+            $"Slots: {slotRange}\n" +
+            $"Date: {dateFrom} to {dateTo}\n" +
+            $"Total sessions: {sessionIds.Count}\n\n" +
+            $"Tất cả slots đã lock sẽ được unlock.",
+            "Xác nhận xoá Fixed Schedule",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Warning);
+
+        if (confirm != DialogResult.Yes)
+            return;
+
+        var log = new StringWriter();
+        int deletedCount = 0;
+        foreach (var sessionId in sessionIds)
+        {
+            if (_state.DeleteFixedSchedule(sessionId, log, out var error))
+            {
+                deletedCount++;
+            }
+            else
+            {
+                Log($"[ERROR] Failed to delete session {sessionId}: {error}");
+            }
+        }
+
+        Log(log.ToString());
+        MessageBox.Show(this, $"Đã xoá {deletedCount}/{sessionIds.Count} Fixed Schedule sessions và unlock các slots.", "Delete Fixed Schedule",
+            MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+        RefreshFixedSchedulesGrid();
+    }
+
     private void GridRooms_SelectionChanged(object? sender, EventArgs e)
     {
         if (_gridRooms.CurrentRow == null)
@@ -4102,7 +5564,25 @@ public class Form1 : Form
     {
         var subjectCode = _txtFixedSubjectCode.Text.Trim();
         var subjectName = _txtFixedSubjectName.Text.Trim();
-        var className = _txtFixedClass.Text.Trim();
+        // Get controls from Tag
+        var tagArr = (_btnFixedApply.Tag as object[]);
+        var cbFixedClass = tagArr?[0] as ComboBox;
+        var cbFixedLecturer = tagArr?[1] as ComboBox;
+        var lbFixedStudents = tagArr?[2] as ListBox;
+
+        var className = cbFixedClass?.SelectedItem?.ToString() ?? "";
+        var lecturerInfo = cbFixedLecturer?.SelectedItem?.ToString() ?? "";
+        var lecturerId = lecturerInfo.Split(' ').FirstOrDefault() ?? "";
+        var studentIds = new List<string>();
+        if (lbFixedStudents != null)
+        {
+            foreach (var item in lbFixedStudents.SelectedItems)
+            {
+                var id = item.ToString()?.Split(' ').FirstOrDefault();
+                if (!string.IsNullOrEmpty(id)) studentIds.Add(id);
+            }
+        }
+
         var roomId = _cbFixedRoom.SelectedItem?.ToString();
         var fromDate = _dtFixedFrom.Value.Date;
         var toDate = _dtFixedTo.Value.Date;
@@ -4133,6 +5613,7 @@ public class Form1 : Form
 
         var logger = new UiLogger(this);
 
+        // TODO: Update CreateFixedWeeklyClassSchedule to accept lecturerId and studentIds
         if (!_state.CreateFixedWeeklyClassSchedule(
                 subjectCode,
                 subjectName,
@@ -4144,18 +5625,20 @@ public class Form1 : Form
                 fromDate,
                 toDate,
                 logger,
-                out var error))
+                out var error,
+                lecturerId,
+                studentIds))
         {
             MessageBox.Show(this, error, "Tạo lịch cố định thất bại",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
+        // ✅ UI sẽ tự động refresh qua event FixedScheduleCreated
+        // Note: PushMyFixedSchedule đã được gọi trong CreateFixedWeeklyClassSchedule
+        
         MessageBox.Show(this, "Đã tạo lịch cố định cho môn học.", "Fixed schedule",
             MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-        // refresh view nếu ngày đang xem nằm trong khoảng
-        RefreshSlotsSafe();
     }
 
 
@@ -4166,7 +5649,11 @@ public class Form1 : Form
         public override Encoding Encoding => Encoding.UTF8;
         public override void WriteLine(string? value)
         {
-            if (value != null) _form.Log(value);
+            if (value != null)
+            {
+                _form.Log(value);
+                Console.WriteLine(value); // Ghi ra console để debug
+            }
         }
     }
     // Form hiển thị danh sách Booking
@@ -4279,14 +5766,15 @@ public class Form1 : Form
 
     private void BtnAddUser_Click(object? sender, EventArgs e)
     {
-        var userId = _txtUserId.Text.Trim();
+        var userId = (_txtUserId.Text ?? "").Trim().ToUpperInvariant();
         var fullName = _txtUserFullName.Text.Trim();
         var userType = _cbUserType.SelectedItem?.ToString() ?? "";
         var email = _txtUserEmail.Text.Trim();
         var phone = _txtUserPhone.Text.Trim();
-        var studentId = _txtUserStudentId.Text.Trim();
-        var lecturerId = _txtUserLecturerId.Text.Trim();
+        var studentId = (_txtUserStudentId.Text ?? "").Trim().ToUpperInvariant();
+        var lecturerId = (_txtUserLecturerId.Text ?? "").Trim().ToUpperInvariant();
         var facultySel = _cbUserFaculty.SelectedItem?.ToString() ?? "";
+        var className = (_txtUserClass.Text ?? "").Trim().ToUpperInvariant();
 
         var passwordPlain = _txtPassword.Text;
         if (string.IsNullOrWhiteSpace(passwordPlain))
@@ -4312,6 +5800,7 @@ public class Form1 : Form
             Phone = phone,
             StudentId = studentId,
             LecturerId = lecturerId,
+            Class = className,
             IsActive = true
         };
 
@@ -4338,7 +5827,7 @@ public class Form1 : Form
     }
     private void BtnUpdateUser_Click(object? sender, EventArgs e)
     {
-        var userId = _txtUserId.Text.Trim();
+        var userId = (_txtUserId.Text ?? "").Trim().ToUpperInvariant();
         if (string.IsNullOrWhiteSpace(userId))
         {
             MessageBox.Show("UserId is required.");
@@ -4349,10 +5838,11 @@ public class Form1 : Form
         var userType = _cbUserType.SelectedItem?.ToString() ?? "";
         var email = _txtUserEmail.Text.Trim();
         var phone = _txtUserPhone.Text.Trim();
-        var studentId = _txtUserStudentId.Text.Trim();
-        var lecturerId = _txtUserLecturerId.Text.Trim();
+        var studentId = (_txtUserStudentId.Text ?? "").Trim().ToUpperInvariant();
+        var lecturerId = (_txtUserLecturerId.Text ?? "").Trim().ToUpperInvariant();
         var facultySel = _cbUserFaculty.SelectedItem?.ToString() ?? "";
         var isActive = _chkUserActive.Checked;
+        var className = (_txtUserClass.Text ?? "").Trim().ToUpperInvariant();
 
         var updatedUser = new UserInfo
         {
@@ -4363,6 +5853,7 @@ public class Form1 : Form
             Phone = phone,
             StudentId = studentId,
             LecturerId = lecturerId,
+            Class = className,
             IsActive = isActive
         };
 
@@ -4425,40 +5916,29 @@ public class Form1 : Form
             return;
         }
 
-        var date = _dtRoomFilterDate.Value.Date;
-
-        var logger = new UiLogger(this);
-        var list = _state.GetDailySchedule(date, roomId, logger);
-
-        // Cấu hình cột cho grid nếu chưa cấu hình
-        _gridRoomDaily.AutoGenerateColumns = false;
-        if (_gridRoomDaily.Columns.Count == 0)
+        var desiredDate = _dtRoomFilterDate.Value.Date;
+        if (_dtDate.Value.Date != desiredDate)
         {
-            _gridRoomDaily.Columns.Clear();
-
-            DataGridViewTextBoxColumn AddCol(string prop, string header, int width = 0)
-            {
-                var col = new DataGridViewTextBoxColumn
-                {
-                    DataPropertyName = prop,
-                    HeaderText = header,
-                    Name = prop,
-                    ReadOnly = true
-                };
-                if (width > 0) col.Width = width;
-                _gridRoomDaily.Columns.Add(col);
-                return col;
-            }
-
-            AddCol(nameof(RoomDailySlotView.SlotId), "Slot", 60);
-            AddCol(nameof(RoomDailySlotView.TimeRange), "Time range", 120);
-            AddCol(nameof(RoomDailySlotView.Status), "Status", 80);
-            AddCol(nameof(RoomDailySlotView.UserId), "UserId", 100);
-            AddCol(nameof(RoomDailySlotView.FullName), "FullName", 150);
-            AddCol(nameof(RoomDailySlotView.BookingStatus), "BookingStatus", 100);
+            _dtDate.Value = desiredDate;
         }
 
-        _gridRoomDaily.DataSource = list;
+        var roomDaily = _gridSlotsBinding
+            .Where(s => string.Equals(s.RoomId, roomId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(s =>
+            {
+                var t = (s.SlotId ?? "").Trim().ToUpperInvariant();
+                if (t.StartsWith("S") && int.TryParse(t.Substring(1), out var idx))
+                    return idx;
+                return int.MaxValue;
+            })
+            .ToList();
+
+        _gridRoomDaily.AutoGenerateColumns = true;
+        _gridRoomDaily.DataSource = null;
+        _gridRoomDaily.DataSource = roomDaily;
+
+        if (_gridRoomDaily.Rows.Count > 0 && _gridRoomDaily.CurrentRow == null)
+            _gridRoomDaily.Rows[0].Selected = true;
     }
 
     // ===== HELPER: Tạo form con hiển thị Slots & Tabs =====
@@ -4500,5 +5980,3 @@ public class Form1 : Form
     }
 
 }
-
-

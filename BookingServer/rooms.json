@@ -1,0 +1,112 @@
+[
+  {
+    "RoomId": "A08",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "DISABLED"
+  },
+  {
+    "RoomId": "A16",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 70,
+    "HasProjector": true,
+    "HasPC": false,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A24",
+    "Building": "CS1 - T\u00F2a B",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A32",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A21",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A22",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A23",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A24-A25",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A31",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A32-A33",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  },
+  {
+    "RoomId": "A34-A35",
+    "Building": "CS1 - T\u00F2a A",
+    "Capacity": 40,
+    "HasProjector": true,
+    "HasPC": true,
+    "HasAirConditioner": true,
+    "HasMic": false,
+    "Status": "ACTIVE"
+  }
+]

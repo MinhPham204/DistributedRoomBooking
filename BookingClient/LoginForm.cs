@@ -22,10 +22,13 @@ namespace BookingClient
 
         private TextBox _txtUserId = null!;
         private TextBox _txtPassword = null!;
+        private Button _btnTogglePassword = null!;
         private CheckBox _chkRemember = null!;
         private Button _btnLogin = null!;
         private LinkLabel _lnkForgotPassword = null!;
         private Label _lblError = null!;
+
+        private GlassPanel _pnlCard = null!;
 
         private bool _isConnectedOk = false;
         private string? _detectedServerIp = null;
@@ -98,188 +101,285 @@ namespace BookingClient
         private void SetupUi()
         {
             Text = "Đăng nhập - Hệ thống đặt phòng học";
-            Width = 420;
-            Height = 420;
+            Width = 1000;
+            Height = 600;
+            MinimumSize = new Size(760, 460);
             StartPosition = FormStartPosition.CenterScreen;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = false;
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
+            Font = new Font("Segoe UI", 10, FontStyle.Regular);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            DoubleBuffered = true;
 
-            // ===== Logo + tên hệ thống =====
-            _picLogo = new PictureBox
-            {
-                Left = 20,
-                Top = 20,
-                Width = 64,
-                Height = 64,
-                BorderStyle = BorderStyle.FixedSingle, // sau này gán Image logo
-                SizeMode = PictureBoxSizeMode.StretchImage
-            };
-            Controls.Add(_picLogo);
+            Controls.Clear();
 
-            _lblSystemName = new Label
+            try
             {
-                Left = 100,
-                Top = 35,
-                Width = 280,
-                Height = 40,
-                Text = "HỆ THỐNG ĐẶT PHÒNG HỌC",
-                Font = new Font(Font.FontFamily, 11, FontStyle.Bold)
-            };
-            Controls.Add(_lblSystemName);
+                var bg = TryLoadLoginBackgroundImage();
+                if (bg != null)
+                {
+                    BackgroundImage = bg;
+                    BackgroundImageLayout = ImageLayout.Stretch;
+                }
+                else
+                {
+                    BackgroundImage = null;
+                    BackColor = Color.FromArgb(30, 144, 255);
+                }
+            }
+            catch
+            {
+                BackgroundImage = null;
+                BackColor = Color.FromArgb(30, 144, 255);
+            }
 
-            // ===== Group: Server =====
-            var grpServer = new GroupBox
+            var root = new TableLayoutPanel
             {
-                Text = "Server",
-                Left = 20,
-                Top = 100,
-                Width = 360,
-                Height = 90
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 3,
+                RowCount = 3
             };
-            Controls.Add(grpServer);
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 420f));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 410f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 50f));
+            Controls.Add(root);
 
-            var lblIp = new Label
+            var stack = new TableLayoutPanel
             {
-                Text = "Server IP:",
-                Left = 10,
-                Top = 30,
-                Width = 70
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 1,
+                RowCount = 2,
+                Padding = new Padding(0)
             };
-            _txtServerIp = new TextBox
-            {
-                Left = 80,
-                Top = 27,
-                Width = 120,
-                Text = "127.0.0.1"
-            };
+            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 400f));
+            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 90f));
+            root.Controls.Add(stack, 1, 1);
 
-            _btnCheckConnect = new Button
+            _pnlCard = new GlassPanel
             {
-                Text = "Check",
-                Left = 210,
-                Top = 25,
-                Width = 70
+                Dock = DockStyle.Fill,
+                FillColor = Color.FromArgb(110, 255, 255, 255),
+                BorderColor = Color.FromArgb(140, 255, 255, 255),
+                BorderThickness = 1f,
+                CornerRadius = 16,
+                ShadowColor = Color.FromArgb(60, 0, 0, 0),
+                ShadowBlur = 16,
+                ShadowOffset = new Point(0, 6),
+                Padding = new Padding(22, 18, 22, 18),
+                MinimumSize = new Size(0, 320)
             };
-            // sau này gắn event ping server
-            _btnCheckConnect.Click += async (s, e) =>
+            stack.Controls.Add(_pnlCard, 0, 0);
+
+            _lblError = new Label
             {
-                await CheckConnectAsync();
+                Dock = DockStyle.Fill,
+                ForeColor = Color.FromArgb(239, 68, 68),
+                BackColor = Color.FromArgb(90, 0, 0, 0),
+                Text = "",
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                Padding = new Padding(10, 10, 10, 10)
             };
+            stack.Controls.Add(_lblError, 0, 1);
+
+            var cardLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent,
+                ColumnCount = 1,
+                RowCount = 9
+            };
+            cardLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // title
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // status
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // user label
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // user textbox
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // pwd label
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // pwd row
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // remember
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // login
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // forgot
+            _pnlCard.Controls.Add(cardLayout);
+
+            var lblTitle = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = "Đăng nhập",
+                Font = new Font("Segoe UI", 14, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 4)
+            };
+            cardLayout.Controls.Add(lblTitle, 0, 0);
+
+            var statusRow = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                BackColor = Color.Transparent,
+                AutoSize = true,
+                Margin = new Padding(0, 0, 0, 10)
+            };
+            cardLayout.Controls.Add(statusRow, 0, 1);
 
             _pnlConnectDot = new Panel
             {
-                Left = 290,
-                Top = 30,
-                Width = 16,
-                Height = 16,
-                BackColor = Color.Red,         // mặc định Lost
-                BorderStyle = BorderStyle.FixedSingle
+                Width = 10,
+                Height = 10,
+                BackColor = Color.Orange,
+                BorderStyle = BorderStyle.FixedSingle,
+                Margin = new Padding(0, 6, 8, 0)
             };
-            var path = new GraphicsPath();
-            path.AddEllipse(0, 0, _pnlConnectDot.Width, _pnlConnectDot.Height);
-            _pnlConnectDot.Region = new Region(path);
+            var dotPath = new GraphicsPath();
+            dotPath.AddEllipse(0, 0, _pnlConnectDot.Width, _pnlConnectDot.Height);
+            _pnlConnectDot.Region = new Region(dotPath);
+            statusRow.Controls.Add(_pnlConnectDot);
 
             _lblConnectStatus = new Label
             {
-                Left = 310,
-                Top = 30,
-                Width = 50,
-                Text = "Lost",
-                ForeColor = Color.Red
+                AutoSize = true,
+                Text = "Checking...",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent
             };
+            statusRow.Controls.Add(_lblConnectStatus);
 
-            grpServer.Controls.AddRange(new Control[]
+            _btnCheckConnect = new Button
             {
-                lblIp, _txtServerIp, _btnCheckConnect, _pnlConnectDot, _lblConnectStatus
-            });
-
-            // ===== Group: Đăng nhập =====
-            var grpLogin = new GroupBox
-            {
-                Text = "Đăng nhập",
-                Left = 20,
-                Top = 200,
-                Width = 360,
-                Height = 140
+                Text = "Connect",
+                AutoSize = true,
+                Height = 26,
+                Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(170, 255, 255, 255),
+                ForeColor = Color.Black,
+                Margin = new Padding(12, 0, 0, 0)
             };
-            Controls.Add(grpLogin);
+            _btnCheckConnect.FlatAppearance.BorderSize = 0;
+            _btnCheckConnect.Click += async (s, e) => { await CheckConnectAsync(); };
+            statusRow.Controls.Add(_btnCheckConnect);
 
             var lblUser = new Label
             {
-                Text = "User ID:",
-                Left = 10,
-                Top = 30,
-                Width = 70
+                Dock = DockStyle.Fill,
+                Text = "Tên đăng nhập",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 4)
             };
+            cardLayout.Controls.Add(lblUser, 0, 2);
+
             _txtUserId = new TextBox
             {
-                Left = 80,
-                Top = 27,
-                Width = 260,
-                Text = "sv001"
+                Dock = DockStyle.Top,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 10, FontStyle.Regular),
+                Margin = new Padding(0, 0, 0, 10)
             };
+            cardLayout.Controls.Add(_txtUserId, 0, 3);
 
             var lblPwd = new Label
             {
-                Text = "Password:",
-                Left = 10,
-                Top = 60,
-                Width = 70
+                Dock = DockStyle.Fill,
+                Text = "Mật khẩu",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 4)
             };
+            cardLayout.Controls.Add(lblPwd, 0, 4);
+
+            var pwdRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.Transparent,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(0, 0, 0, 10),
+                Padding = new Padding(0)
+            };
+            pwdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            pwdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64f));
+            cardLayout.Controls.Add(pwdRow, 0, 5);
+
+            _btnTogglePassword = new Button
+            {
+                Dock = DockStyle.Fill,
+                Width = 64,
+                Text = "Hiện",
+                Font = new Font("Segoe UI", 9, FontStyle.Regular),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(90, 255, 255, 255),
+                ForeColor = Color.Black
+            };
+            _btnTogglePassword.FlatAppearance.BorderSize = 0;
+
             _txtPassword = new TextBox
             {
-                Left = 80,
-                Top = 57,
-                Width = 260,
+                Dock = DockStyle.Fill,
                 UseSystemPasswordChar = true,
-                Text = "sv123"
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 10, FontStyle.Regular)
+            };
+            pwdRow.Controls.Add(_txtPassword, 0, 0);
+            pwdRow.Controls.Add(_btnTogglePassword, 1, 0);
+
+            _btnTogglePassword.Click += (s, e) =>
+            {
+                _txtPassword.UseSystemPasswordChar = !_txtPassword.UseSystemPasswordChar;
+                _btnTogglePassword.Text = _txtPassword.UseSystemPasswordChar ? "Hiện" : "Ẩn";
             };
 
             _chkRemember = new CheckBox
             {
-                Left = 80,
-                Top = 85,
-                Width = 200,
-                Text = "Nhớ tài khoản trên máy này"
+                Dock = DockStyle.Fill,
+                Text = "Nhớ tài khoản",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 0, 0, 12)
             };
+            cardLayout.Controls.Add(_chkRemember, 0, 6);
 
             _btnLogin = new Button
             {
+                Dock = DockStyle.Top,
+                Height = 38,
                 Text = "Đăng nhập",
-                Left = 245,
-                Top = 105,
-                Width = 95
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(220, 255, 255, 255),
+                ForeColor = Color.Black,
+                Margin = new Padding(0, 0, 0, 8)
             };
-            _btnLogin.Click += BtnLogin_Click; // sau này viết logic
+            _btnLogin.FlatAppearance.BorderSize = 0;
+            _btnLogin.Click += BtnLogin_Click;
+            cardLayout.Controls.Add(_btnLogin, 0, 7);
+            SetRoundedRegion(_btnLogin, 10);
 
-            // // Không cho người dùng tự gõ IP nữa
-            // _txtServerIp.ReadOnly = true;
-            // _txtServerIp.Text = "(auto)";
-
-            // Bắt buộc phải Check connect trước khi login
-            _btnLogin.Enabled = false;
-
-            grpLogin.Controls.AddRange(new Control[]
-            {
-                lblUser, _txtUserId,
-                lblPwd, _txtPassword,
-                _chkRemember, _btnLogin
-            });
-
-            // ===== Quên mật khẩu + lỗi =====
             _lnkForgotPassword = new LinkLabel
             {
-                Left = 20,
-                Top = 350,
-                Width = 120,
-                Text = "Quên mật khẩu?"
+                Dock = DockStyle.Fill,
+                Text = "Quên mật khẩu?",
+                LinkColor = Color.White,
+                ActiveLinkColor = Color.White,
+                VisitedLinkColor = Color.White,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleRight,
+                Margin = new Padding(0)
             };
             _lnkForgotPassword.Click += (s, e) =>
             {
-                var serverIp = _txtServerIp.Text.Trim();
+                var serverIp = (_detectedServerIp ?? _txtServerIp?.Text ?? "").Trim();
                 if (string.IsNullOrWhiteSpace(serverIp))
                 {
-                    MessageBox.Show("Vui lòng nhập Server IP trước.", "Quên mật khẩu");
+                    MessageBox.Show("Không tìm thấy Server IP. Vui lòng đợi check kết nối hoặc thử lại.", "Quên mật khẩu");
                     return;
                 }
 
@@ -289,18 +389,45 @@ namespace BookingClient
                     f.ShowDialog(this);
                 }
             };
-            Controls.Add(_lnkForgotPassword);
+            cardLayout.Controls.Add(_lnkForgotPassword, 0, 8);
 
-            _lblError = new Label
+            // Control phụ trợ cho logic (không cho user chỉnh IP ở UI)
+            _txtServerIp = new TextBox { Visible = false, Text = "127.0.0.1" };
+            Controls.Add(_txtServerIp);
+
+            // Bắt buộc phải Check connect trước khi login
+            _btnLogin.Enabled = false;
+
+            Shown += async (s, e) =>
             {
-                Left = 150,
-                Top = 345,
-                Width = 230,
-                Height = 40,
-                ForeColor = Color.Red,
-                Text = "" // rỗng, khi sai mới set
+                await CheckConnectAsync();
             };
-            Controls.Add(_lblError);
+        }
+
+        private static void SetRoundedRegion(Control control, int radius)
+        {
+            try
+            {
+                var rect = new Rectangle(0, 0, control.Width, control.Height);
+                var path = CreateRoundRectPath(rect, radius);
+                control.Region = new Region(path);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private static GraphicsPath CreateRoundRectPath(Rectangle rect, int radius)
+        {
+            var path = new GraphicsPath();
+            var d = radius * 2;
+            path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         // ====== chỗ này sau này bạn gắn network/login thật ======
@@ -315,7 +442,7 @@ namespace BookingClient
 
             _lblError.Text = "";
 
-            var userId = _txtUserId.Text.Trim();
+            var userId = (_txtUserId.Text ?? "").Trim().ToUpperInvariant();
             var password = _txtPassword.Text;
 
             if (string.IsNullOrWhiteSpace(userId) || string.IsNullOrWhiteSpace(password))
@@ -406,13 +533,13 @@ namespace BookingClient
                             switch (reason)
                             {
                                 case "USER_NOT_FOUND":
-                                    _lblError.Text = "User không tồn tại.";
+                                    _lblError.Text = "Sai thông tin đăng nhập.";
                                     break;
                                 case "USER_INACTIVE":
                                     _lblError.Text = "Tài khoản đang bị khóa (Inactive).";
                                     break;
                                 case "INVALID_PASSWORD":
-                                    _lblError.Text = "Sai mật khẩu, vui lòng thử lại.";
+                                    _lblError.Text = "Sai thông tin đăng nhập.";
                                     break;
                                 default:
                                     _lblError.Text = "Đăng nhập thất bại.";
@@ -443,9 +570,15 @@ namespace BookingClient
 
             _btnCheckConnect.Enabled = false;
             _lblError.Text = "";
-            _lblConnectStatus.Text = "Checking...";
-            _lblConnectStatus.ForeColor = Color.Orange;
-            _pnlConnectDot.BackColor = Color.Orange;
+            if (_lblConnectStatus != null)
+            {
+                _lblConnectStatus.Text = "Checking...";
+                _lblConnectStatus.ForeColor = Color.White;
+            }
+            if (_pnlConnectDot != null)
+            {
+                _pnlConnectDot.BackColor = Color.Orange;
+            }
 
             try
             {
@@ -466,9 +599,15 @@ namespace BookingClient
                     if (finished != receiveTask)
                     {
                         // Timeout
-                        _lblConnectStatus.Text = "No server";
-                        _lblConnectStatus.ForeColor = Color.Red;
-                        _pnlConnectDot.BackColor = Color.Red;
+                        if (_lblConnectStatus != null)
+                        {
+                            _lblConnectStatus.Text = "No server";
+                            _lblConnectStatus.ForeColor = Color.White;
+                        }
+                        if (_pnlConnectDot != null)
+                        {
+                            _pnlConnectDot.BackColor = Color.Red;
+                        }
                         _lblError.Text = "Không tìm thấy server trên cùng mạng WiFi.\nKiểm tra lại Start Server.";
                         return;
                     }
@@ -479,9 +618,15 @@ namespace BookingClient
                     var parts = response.Split('|');
                     if (parts.Length != 3 || parts[0] != "SERVER_INFO")
                     {
-                        _lblConnectStatus.Text = "Invalid";
-                        _lblConnectStatus.ForeColor = Color.Red;
-                        _pnlConnectDot.BackColor = Color.Red;
+                        if (_lblConnectStatus != null)
+                        {
+                            _lblConnectStatus.Text = "Invalid";
+                            _lblConnectStatus.ForeColor = Color.White;
+                        }
+                        if (_pnlConnectDot != null)
+                        {
+                            _pnlConnectDot.BackColor = Color.Red;
+                        }
                         _lblError.Text = "Packet discovery nhận được không đúng định dạng.";
                         return;
                     }
@@ -504,9 +649,15 @@ namespace BookingClient
                         }
                         catch
                         {
-                            _lblConnectStatus.Text = "Lost";
-                            _lblConnectStatus.ForeColor = Color.Red;
-                            _pnlConnectDot.BackColor = Color.Red;
+                            if (_lblConnectStatus != null)
+                            {
+                                _lblConnectStatus.Text = "Lost";
+                                _lblConnectStatus.ForeColor = Color.White;
+                            }
+                            if (_pnlConnectDot != null)
+                            {
+                                _pnlConnectDot.BackColor = Color.Red;
+                            }
                             _lblError.Text = "Tìm thấy server nhưng không connect TCP được.\nHãy kiểm tra Firewall / Start Server.";
                             return;
                         }
@@ -516,9 +667,15 @@ namespace BookingClient
                     _detectedServerIp = ip;
                     _txtServerIp.Text = ip;
 
-                    _lblConnectStatus.Text = "OK";
-                    _lblConnectStatus.ForeColor = Color.Green;
-                    _pnlConnectDot.BackColor = Color.LimeGreen;
+                    if (_lblConnectStatus != null)
+                    {
+                        _lblConnectStatus.Text = "OK";
+                        _lblConnectStatus.ForeColor = Color.White;
+                    }
+                    if (_pnlConnectDot != null)
+                    {
+                        _pnlConnectDot.BackColor = Color.LimeGreen;
+                    }
 
                     _isConnectedOk = true;
                     _btnLogin.Enabled = true;
@@ -526,14 +683,124 @@ namespace BookingClient
             }
             catch (Exception ex)
             {
-                _lblConnectStatus.Text = "Error";
-                _lblConnectStatus.ForeColor = Color.Red;
-                _pnlConnectDot.BackColor = Color.Red;
+                if (_lblConnectStatus != null)
+                {
+                    _lblConnectStatus.Text = "Error";
+                    _lblConnectStatus.ForeColor = Color.White;
+                }
+                if (_pnlConnectDot != null)
+                {
+                    _pnlConnectDot.BackColor = Color.Red;
+                }
                 _lblError.Text = "Lỗi khi Check connect: " + ex.Message;
             }
             finally
             {
                 _btnCheckConnect.Enabled = true;
+            }
+        }
+
+        private class GlassPanel : Panel
+        {
+            public Color FillColor { get; set; } = Color.FromArgb(160, 255, 255, 255);
+            public Color BorderColor { get; set; } = Color.FromArgb(120, 255, 255, 255);
+            public float BorderThickness { get; set; } = 1f;
+            public int CornerRadius { get; set; } = 16;
+            public Color ShadowColor { get; set; } = Color.FromArgb(60, 0, 0, 0);
+            public int ShadowBlur { get; set; } = 16;
+            public Point ShadowOffset { get; set; } = new Point(0, 6);
+
+            public GlassPanel()
+            {
+                SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+                UpdateStyles();
+                BackColor = Color.Transparent;
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+
+                // Shadow (simple layered draw to fake blur)
+                if (ShadowBlur > 0)
+                {
+                    var shadowRect = new Rectangle(
+                        rect.X + ShadowOffset.X,
+                        rect.Y + ShadowOffset.Y,
+                        rect.Width,
+                        rect.Height);
+
+                    for (int i = ShadowBlur; i >= 1; i -= 4)
+                    {
+                        var alpha = (int)(ShadowColor.A * (i / (float)ShadowBlur));
+                        if (alpha <= 0) continue;
+
+                        var inflate = (ShadowBlur - i) / 2;
+                        var r = shadowRect;
+                        r.Inflate(inflate, inflate);
+
+                        using (var sp = CreateRoundRectPath(r, CornerRadius + inflate))
+                        using (var sb = new SolidBrush(Color.FromArgb(alpha, ShadowColor)))
+                        {
+                            e.Graphics.FillPath(sb, sp);
+                        }
+                    }
+                }
+
+                using (var path = CreateRoundRectPath(rect, CornerRadius))
+                using (var brush = new SolidBrush(FillColor))
+                using (var pen = new Pen(BorderColor, BorderThickness))
+                {
+                    e.Graphics.FillPath(brush, path);
+                    e.Graphics.DrawPath(pen, path);
+                }
+
+                base.OnPaint(e);
+            }
+        }
+
+        private static Image? TryLoadLoginBackgroundImage()
+        {
+            // Prefer the repo's data image: data\1-e1649378997106.jpg
+            var candidates = new[]
+            {
+                Path.Combine("data", "1-e1649378997106.jpg"),
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "login_bg.jpg")
+            };
+
+            // Search upwards from bin folder to repo root
+            var dir = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
+            for (int i = 0; i < 8 && dir != null; i++, dir = dir.Parent)
+            {
+                foreach (var rel in candidates)
+                {
+                    var full = Path.GetFullPath(Path.Combine(dir.FullName, rel));
+                    if (!File.Exists(full)) continue;
+                    return LoadImageUnlocked(full);
+                }
+            }
+
+            // As a last resort, try the absolute path given by the user
+            var abs = @"D:\Downloads\DistributedRoomBooking\data\1-e1649378997106.jpg";
+            if (File.Exists(abs))
+                return LoadImageUnlocked(abs);
+
+            return null;
+        }
+
+        private static Image LoadImageUnlocked(string path)
+        {
+            // Avoid locking the file on disk
+            using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            using (var ms = new MemoryStream())
+            {
+                fs.CopyTo(ms);
+                ms.Position = 0;
+                using (var img = Image.FromStream(ms))
+                {
+                    return (Image)img.Clone();
+                }
             }
         }
 

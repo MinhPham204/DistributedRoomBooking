@@ -13,7 +13,7 @@ namespace BookingServer
         public bool HasPC { get; set; }
         public bool HasAirConditioner { get; set; }
         public bool HasMic { get; set; }
-        public string Status { get; set; } = "ACTIVE"; // ACTIVE / UNDER_MAINTENANCE / DISABLED
+        public string Status { get; set; } = "ACTIVE"; // ACTIVE / DISABLED
     }
 
     /// Thông tin người dùng: sinh viên / giảng viên / staff.
@@ -185,10 +185,46 @@ namespace BookingServer
     {
         public bool IsBusy { get; set; }
         public string? CurrentHolderClientId { get; set; }
+        public string? CurrentHolderUserId { get; set; }
         public Guid? CurrentBookingId { get; set; }
         // Optional: nếu muốn lưu luôn lock event
         public bool IsEventLocked { get; set; }
         public string? EventNote { get; set; }
+    }
+
+    /// <summary>
+    /// FixedSession: Lịch cố định cho 1 lớp/môn/phòng, không tạo booking per-user.
+    /// </summary>
+    public class FixedSession
+    {
+        public Guid SessionId { get; set; } = Guid.NewGuid();
+        public string SubjectCode { get; set; } = "";
+        public string SubjectName { get; set; } = "";
+        public string Class { get; set; } = "";
+        public string LecturerUserId { get; set; } = "";
+        public List<string> StudentUserIds { get; set; } = new();
+        public string RoomId { get; set; } = "";
+        public string DayOfWeek { get; set; } = ""; // "Monday", "Tuesday", ...
+        public string SlotStartId { get; set; } = "";
+        public string SlotEndId { get; set; } = "";
+        public string DateFrom { get; set; } = ""; // yyyy-MM-dd
+        public string DateTo { get; set; } = "";   // yyyy-MM-dd
+        public string Note { get; set; } = "";
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public DateTime UpdatedAt { get; set; } = DateTime.Now;
+        public List<FixedParticipant> Participants { get; set; } = new();
+        // Event lock: ngày nào bị lock (không cho sửa/xóa)
+        public HashSet<string> LockedDates { get; set; } = new(); // yyyy-MM-dd
+    }
+
+    /// <summary>
+    /// FixedParticipant: mapping userId -> session, để query nhanh lịch của user.
+    /// </summary>
+    public class FixedParticipant
+    {
+        public string UserId { get; set; } = "";
+        public Guid SessionId { get; set; }
+        public string Role { get; set; } = "Student"; // Student / Lecturer
     }
 
     public class Snapshot
@@ -199,6 +235,15 @@ namespace BookingServer
         public List<Booking> Bookings { get; set; } = new();
 
         public Dictionary<string, UserInfo> Users { get; set; } = new();
+
+        // ✅ Thêm RoomsInfo và FixedSessions để persist data
+        public Dictionary<string, RoomInfo> Rooms { get; set; } = new();
+
+        public List<FixedSession> FixedSessions { get; set; } = new();
+
+        public Dictionary<string, List<string>> HomeNotifications { get; set; } = new();
+
+        public Dictionary<string, List<string>> PendingNotifications { get; set; } = new();
     }
 
 }

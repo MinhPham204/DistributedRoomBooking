@@ -1,3 +1,5 @@
+// ====== FIXED SCHEDULE DATA ======
+
 //bookingclient/mainclientform.cs
 using System;
 using System.Drawing;
@@ -30,10 +32,10 @@ namespace BookingClient
         private List<(string slotId, string start, string end)> _slotConfigTemp =
             new List<(string, string, string)>();
         //TCP Conection
-        private TcpClient _tcp;
-        private NetworkStream _stream;
-        private StreamWriter _writer;
-        private StreamReader _reader;
+        private TcpClient? _tcp;
+        private NetworkStream? _stream;
+        private StreamWriter? _writer;
+        private StreamReader? _reader;
 
         // Header
         private Panel _panelHeader = null!;
@@ -48,6 +50,17 @@ namespace BookingClient
         private WinFormsTimer _timerClock = null!;
         private WinFormsTimer _timerTimeSync = null!;   // <<< thêm dòng này
 
+        private TableLayoutPanel _rootLayout = null!;
+        private Panel _panelSidebar = null!;
+        private Panel _panelContentHost = null!;
+        private Panel _navHome = null!;
+        private Panel _navBooking = null!;
+        private Panel _navSchedule = null!;
+        private Panel _navLog = null!;
+        private Panel _navAccount = null!;
+        private Panel _profileCard = null!;
+        private bool _debugLogVisible = false;
+
         // Sub-header (cấu hình ca)
         private Panel _panelSubHeader = null!;
         private Label _lblSlotConfig = null!;
@@ -59,6 +72,7 @@ namespace BookingClient
         private TabPage _tabBooking = null!;
         private TabPage _tabSchedule = null!;
         private TabPage _tabNotifications = null!;
+        private TabPage _tabLog = null!;
         private TabPage _tabAccount = null!;
 
         // ======= Controls cho tab Trang chủ =======
@@ -83,6 +97,17 @@ namespace BookingClient
         private CheckBox _chkNeedMic = null!;
         private Button _btnSearchRooms = null!;
         private DataGridView _gridRooms = null!;
+        private FlowLayoutPanel _flpRoomCards = null!;
+
+        private GroupBox _grpRoomSlots = null!;
+        private Panel _pnlBookingWizardHeader = null!;
+        private Label _lblBookingStep1 = null!;
+        private Label _lblBookingStep2 = null!;
+        private Label _lblBookingStep3 = null!;
+        private bool _suppressRoomSelectionHandler = false;
+        private string? _lastEnabledRoomId;
+        private readonly Dictionary<string, Panel> _roomCardById = new(StringComparer.OrdinalIgnoreCase);
+        private string? _selectedRoomCardId;
 
         // B. Gửi request
         private GroupBox _grpRequest = null!;
@@ -102,13 +127,14 @@ namespace BookingClient
         private TextBox _txtClientLog = null!;
 
         // ======= Tab Lịch của tôi =======
-        private RadioButton _radDayView = null!;
-        private RadioButton _radWeekView = null!;
-        private DateTimePicker _dtScheduleDate = null!;
-        private DataGridView _gridDayView = null!;
+        private ComboBox _cbScheduleWeek = null!;
         private DataGridView _gridWeekView = null!;
         private Button _btnExportSchedule = null!;
         private Button _btnBackHomeFromSchedule = null!;
+        private MonthCalendar _calSchedule = null!;
+        private ToolTip _ttSchedule = null!;
+        private int _scheduleTooltipRow = -1;
+        private int _scheduleTooltipCol = -1;
 
         // ======= Tab Thông báo =======
         private DataGridView _gridNotifications = null!;
@@ -136,6 +162,29 @@ namespace BookingClient
         private Panel _pnlAccConnectDot = null!;
         private Label _lblAccConnectText = null!;
         private Button _btnGoAccountTab = null!;
+        private List<FixedScheduleRow> _myFixedSchedules = new();
+
+        private class FixedScheduleRow
+        {
+            public Guid SessionId { get; set; }
+            public string SubjectCode { get; set; } = "";
+            public string SubjectName { get; set; } = "";
+            public string Class { get; set; } = "";
+            public string LecturerUserId { get; set; } = "";
+            public string RoomId { get; set; } = "";
+            public string DayOfWeek { get; set; } = "";
+            public string SlotStartId { get; set; } = "";
+            public string SlotEndId { get; set; } = "";
+            public string DateFrom { get; set; } = "";
+            public string DateTo { get; set; } = "";
+            public string Note { get; set; } = "";
+        }
+
+        private class WeekItem
+        {
+            public DateTime Monday { get; set; }
+            public string Label { get; set; } = "";
+        }
 
         // ======= Tab Đặt phòng =======
         private Button _btnBackToHome = null!;   // nút quay về tab Trang chủ
@@ -159,18 +208,18 @@ namespace BookingClient
             public bool HasPC { get; set; }
             public bool HasAC { get; set; }
             public bool HasMic { get; set; }
-            public string Status { get; set; } = "FREE";
+            public string Status { get; set; } = "ACTIVE";
         }
         public class RoomInfo
         {
-            public string RoomId { get; set; }
-            public string Building { get; set; }
+            public string? RoomId { get; set; }
+            public string? Building { get; set; }
             public int Capacity { get; set; }
             public bool HasProjector { get; set; }
             public bool HasPC { get; set; }
             public bool HasAirConditioner { get; set; }
             public bool HasMic { get; set; }
-            public string Status { get; set; }
+            public string? Status { get; set; }
         }
 
         // ====== MODEL PHỤ CHO TAB ĐẶT PHÒNG ======
@@ -214,6 +263,9 @@ namespace BookingClient
 
         private bool _isReadingMyBookings = false;
         private readonly List<string> _myBookingsBuffer = new();
+        
+        private bool _isReadingFixedSessions = false;
+        private readonly List<string> _fixedSessionsBuffer = new();
         private readonly BindingSource _bsRoomSlots = new();
         private readonly BindingList<MyBookingRow> _myBookings = new();
         private readonly BindingSource _bsMyBookings = new();
@@ -227,6 +279,90 @@ namespace BookingClient
 
         private readonly List<RoomSearchRow> _allRoomsForSearch = new();
 
+        private static string NormalizeRoomStatus(string? status)
+        {
+            var s = (status ?? "").Trim().ToUpperInvariant();
+            if (string.Equals(s, "DISABLED", StringComparison.OrdinalIgnoreCase))
+                return "DISABLED";
+            return "ACTIVE";
+        }
+
+        private bool IsRoomDisabled(string? roomId)
+        {
+            roomId = (roomId ?? "").Trim().ToUpperInvariant();
+            if (string.IsNullOrWhiteSpace(roomId))
+                return false;
+
+            var r = _allRoomsForSearch.FirstOrDefault(x => string.Equals(x.RoomId, roomId, StringComparison.OrdinalIgnoreCase));
+            if (r == null) return false;
+            return string.Equals(NormalizeRoomStatus(r.Status), "DISABLED", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void RefreshBuildingComboFromRooms()
+        {
+            if (_cbBuilding == null) return;
+
+            var prev = _cbBuilding.SelectedItem?.ToString();
+            _cbBuilding.Items.Clear();
+            _cbBuilding.Items.Add("ALL");
+
+            var buildings = _allRoomsForSearch
+                .Select(r => (r.Building ?? "").Trim())
+                .Where(b => !string.IsNullOrWhiteSpace(b))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(b => b)
+                .ToList();
+
+            foreach (var b in buildings)
+                _cbBuilding.Items.Add(b);
+
+            if (!string.IsNullOrWhiteSpace(prev) && _cbBuilding.Items.Contains(prev))
+                _cbBuilding.SelectedItem = prev;
+            else
+                _cbBuilding.SelectedIndex = 0;
+        }
+
+        private void RefreshReqRoomComboFromRooms()
+        {
+            if (_cbReqRoom == null) return;
+
+            var prev = _cbReqRoom.SelectedItem?.ToString();
+            _cbReqRoom.Items.Clear();
+
+            foreach (var r in _allRoomsForSearch.OrderBy(x => x.RoomId))
+                _cbReqRoom.Items.Add(r.RoomId);
+
+            if (!string.IsNullOrWhiteSpace(prev) && _cbReqRoom.Items.Contains(prev) && !IsRoomDisabled(prev))
+                _cbReqRoom.SelectedItem = prev;
+            else
+            {
+                foreach (var item in _cbReqRoom.Items)
+                {
+                    var id = item?.ToString();
+                    if (!string.IsNullOrWhiteSpace(id) && !IsRoomDisabled(id))
+                    {
+                        _cbReqRoom.SelectedItem = id;
+                        break;
+                    }
+                }
+            }
+        }
+
+        private void ApplyRoomsGridDisabledStyle()
+        {
+            if (_gridRooms == null) return;
+
+            foreach (DataGridViewRow row in _gridRooms.Rows)
+            {
+                if (row.DataBoundItem is not RoomSearchRow r) continue;
+                bool disabled = string.Equals(NormalizeRoomStatus(r.Status), "DISABLED", StringComparison.OrdinalIgnoreCase);
+                row.DefaultCellStyle.ForeColor = disabled ? Color.FromArgb(156, 163, 175) : Color.Black;
+                row.DefaultCellStyle.BackColor = disabled ? Color.FromArgb(243, 244, 246) : Color.White;
+                row.DefaultCellStyle.SelectionBackColor = disabled ? Color.FromArgb(229, 231, 235) : _gridRooms.DefaultCellStyle.SelectionBackColor;
+                row.DefaultCellStyle.SelectionForeColor = disabled ? Color.FromArgb(107, 114, 128) : _gridRooms.DefaultCellStyle.SelectionForeColor;
+            }
+        }
+
         private readonly Dictionary<string, string> _slotTimeLookup = new();
 
         private readonly DemoUserInfo _currentUser;
@@ -239,6 +375,7 @@ namespace BookingClient
         private string? _lastRoomSlotsKey = null; // roomId|date
         private string? _subRoomId;
         private string? _subDateKey;
+        private bool _scheduleReloadInFlight = false; // Prevent concurrent schedule reloads
 
         private string? _currentSubscribedRoomId;
         private string? _currentSubscribedDateKey; // yyyy-MM-dd
@@ -319,6 +456,7 @@ namespace BookingClient
                 await InitHeaderTimeAsync();
                 await LoadSlotConfigFromServerAsync();
                 await LoadHomeFromServerAsync();
+                await LoadFixedSchedulesFromServerAsync();
                 await ReloadScheduleFromServerAsync();
                 await LoadRoomsFromServerAsync();
                 await ReloadMyBookingsAsync();
@@ -337,6 +475,35 @@ namespace BookingClient
             Height = 700;
             StartPosition = FormStartPosition.CenterScreen;
             DoubleBuffered = true;
+            KeyPreview = true;
+            KeyDown += (s, e) => HandleGlobalHotkeys(e);
+
+            _rootLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                BackColor = Color.White
+            };
+            _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220f));
+            _rootLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 80f));
+            _rootLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            Controls.Add(_rootLayout);
+
+            _panelSidebar = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.FromArgb(20, 20, 24)
+            };
+            _rootLayout.Controls.Add(_panelSidebar, 0, 1);
+
+            _panelContentHost = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.White
+            };
+            _rootLayout.Controls.Add(_panelContentHost, 1, 1);
 
             // ====== HEADER ======
             _panelHeader = new Panel
@@ -345,7 +512,8 @@ namespace BookingClient
                 Height = 80,
                 BackColor = Color.WhiteSmoke
             };
-            Controls.Add(_panelHeader);
+            _rootLayout.Controls.Add(_panelHeader, 0, 0);
+            _rootLayout.SetColumnSpan(_panelHeader, 2);
 
             _picAvatar = new PictureBox
             {
@@ -469,7 +637,7 @@ namespace BookingClient
                 Height = 25,
                 // Vị trí cố định
                 Left = 810,
-                Top = 56,
+                Top = 50,
                 Anchor = AnchorStyles.Top   // nếu không muốn nó chạy theo chiều ngang thì bỏ Right đi
             };
 
@@ -535,7 +703,7 @@ namespace BookingClient
                 Height = 35,
                 BackColor = Color.Gainsboro
             };
-            Controls.Add(_panelSubHeader);
+            _panelContentHost.Controls.Add(_panelSubHeader);
 
             _lblSlotConfig = new Label
             {
@@ -565,18 +733,50 @@ namespace BookingClient
             {
                 Dock = DockStyle.Fill
             };
-            Controls.Add(_tabMain);
+            _tabMain.Appearance = TabAppearance.FlatButtons;
+            _tabMain.ItemSize = new Size(0, 1);
+            _tabMain.SizeMode = TabSizeMode.Fixed;
+            _panelContentHost.Controls.Add(_tabMain);
 
             _tabHome = new TabPage("Trang chủ");
             _tabBooking = new TabPage("Đặt phòng");
             _tabSchedule = new TabPage("Lịch của tôi");
             _tabNotifications = new TabPage("Thông báo");
+            _tabLog = new TabPage("Log");
             _tabAccount = new TabPage("Tài khoản");
 
             _tabMain.TabPages.AddRange(new[]
             {
-                _tabHome, _tabBooking, _tabSchedule, _tabNotifications, _tabAccount
+                _tabHome, _tabBooking, _tabSchedule, _tabNotifications, _tabLog, _tabAccount
             });
+
+            _navHome = CreateSidebarItem("\uE80F", "Trang chủ", () => _tabMain.SelectedTab = _tabHome);
+            _navBooking = CreateSidebarItem("\uE8C7", "Đặt phòng", () => _tabMain.SelectedTab = _tabBooking);
+            _navSchedule = CreateSidebarItem("\uE787", "Lịch biểu", () => _tabMain.SelectedTab = _tabSchedule);
+            _navLog = CreateSidebarItem("\uE8A5", "Log", () => _tabMain.SelectedTab = _tabLog);
+            _navAccount = CreateSidebarItem("\uE77B", "Tài khoản", () => _tabMain.SelectedTab = _tabAccount);
+
+            _navHome.Top = 30;
+            _navBooking.Top = _navHome.Bottom + 6;
+            _navSchedule.Top = _navBooking.Bottom + 6;
+            _navLog.Top = _navSchedule.Bottom + 6;
+            _navAccount.Top = _navLog.Bottom + 6;
+
+            _panelSidebar.Controls.Add(_navHome);
+            _panelSidebar.Controls.Add(_navBooking);
+            _panelSidebar.Controls.Add(_navSchedule);
+            _panelSidebar.Controls.Add(_navLog);
+            _panelSidebar.Controls.Add(_navAccount);
+            SetSidebarActive(_navHome);
+
+            _tabMain.SelectedIndexChanged += (s, e) =>
+            {
+                if (_tabMain.SelectedTab == _tabHome) SetSidebarActive(_navHome);
+                else if (_tabMain.SelectedTab == _tabBooking) SetSidebarActive(_navBooking);
+                else if (_tabMain.SelectedTab == _tabSchedule) SetSidebarActive(_navSchedule);
+                else if (_tabMain.SelectedTab == _tabLog) SetSidebarActive(_navLog);
+                else if (_tabMain.SelectedTab == _tabAccount) SetSidebarActive(_navAccount);
+            };
 
             // this.Shown += async (s, e) =>
             // {
@@ -632,7 +832,7 @@ namespace BookingClient
                 {
                     while (true)
                     {
-                        string? line = await _reader.ReadLineAsync();
+                        string? line = await _reader!.ReadLineAsync();
                         if (line == null)
                         {
                             _socketClosed = true;
@@ -682,16 +882,31 @@ namespace BookingClient
         // ================== 2.3. TAB TRANG CHỦ ==================
         private void BuildHomeTabUi()
         {
+            _tabHome.Controls.Clear();
+            _tabHome.BackColor = Color.White;
+
+            var root = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(10),
+                BackColor = Color.White
+            };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58f));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56f));
+            _tabHome.Controls.Add(root);
+
             // ===== Trái: Lịch hôm nay =====
             _grpTodaySchedule = new GroupBox
             {
                 Text = "Lịch hôm nay của bạn",
-                Left = 10,
-                Top = 100,
-                Width = 450,
-                Height = 300
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
             };
-            _tabHome.Controls.Add(_grpTodaySchedule);
+            root.Controls.Add(_grpTodaySchedule, 0, 0);
 
             _gridTodaySchedule = new DataGridView
             {
@@ -701,9 +916,30 @@ namespace BookingClient
                 AllowUserToDeleteRows = false,
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false
+                MultiSelect = false,
+                RowHeadersVisible = false,
+                BorderStyle = BorderStyle.None,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                GridColor = Color.FromArgb(235, 235, 235),
+                BackgroundColor = Color.White,
+                EnableHeadersVisualStyles = false
             };
             _grpTodaySchedule.Controls.Add(_gridTodaySchedule);
+            _gridTodaySchedule.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
+            _gridTodaySchedule.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(55, 65, 81);
+            _gridTodaySchedule.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            _gridTodaySchedule.DefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Regular);
+            _gridTodaySchedule.DefaultCellStyle.SelectionBackColor = Color.FromArgb(229, 231, 235);
+            _gridTodaySchedule.DefaultCellStyle.SelectionForeColor = Color.FromArgb(17, 24, 39);
+            _gridTodaySchedule.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(252, 252, 252);
+            _gridTodaySchedule.RowTemplate.Height = 44;
+            _gridTodaySchedule.ColumnHeadersHeight = 36;
+            _gridTodaySchedule.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+            _gridTodaySchedule.DefaultCellStyle.Padding = new Padding(8, 0, 8, 0);
+            _gridTodaySchedule.CellPainting -= GridTodaySchedule_CellPainting;
+            _gridTodaySchedule.CellPainting += GridTodaySchedule_CellPainting;
+            _gridTodaySchedule.RowPostPaint -= GridTodaySchedule_RowPostPaint;
+            _gridTodaySchedule.RowPostPaint += GridTodaySchedule_RowPostPaint;
 
             // Định nghĩa cột: Giờ, Phòng, Môn, Người dạy/người đặt, Trạng thái, Ghi chú
             _gridTodaySchedule.Columns.Clear();
@@ -714,70 +950,339 @@ namespace BookingClient
             _gridTodaySchedule.Columns.Add("Status", "Trạng thái");
             _gridTodaySchedule.Columns.Add("Note", "Ghi chú");
 
+            _gridTodaySchedule.Columns["TimeRange"].FillWeight = 18f;
+            _gridTodaySchedule.Columns["RoomId"].FillWeight = 10f;
+            _gridTodaySchedule.Columns["Subject"].FillWeight = 24f;
+            _gridTodaySchedule.Columns["Owner"].FillWeight = 20f;
+            _gridTodaySchedule.Columns["Status"].FillWeight = 12f;
+            _gridTodaySchedule.Columns["Note"].FillWeight = 16f;
+
+            _gridTodaySchedule.Columns["TimeRange"].DefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            _gridTodaySchedule.Columns["TimeRange"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleLeft;
+            _gridTodaySchedule.Columns["Status"].DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            _gridTodaySchedule.Columns["Status"].DefaultCellStyle.ForeColor = Color.Transparent;
+
             // ===== Phải: Thông báo mới =====
             _grpLatestNotifications = new GroupBox
             {
                 Text = "Thông báo mới",
-                Left = 470,
-                Top = 100,
-                Width = 480,
-                Height = 300
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
             };
-            _tabHome.Controls.Add(_grpLatestNotifications);
+            root.Controls.Add(_grpLatestNotifications, 1, 0);
 
             _lstLatestNotifications = new ListBox
             {
                 Dock = DockStyle.Fill
             };
             _grpLatestNotifications.Controls.Add(_lstLatestNotifications);
+            _lstLatestNotifications.BorderStyle = BorderStyle.None;
+            _lstLatestNotifications.BackColor = Color.White;
+            _lstLatestNotifications.ForeColor = Color.FromArgb(17, 24, 39);
+            _lstLatestNotifications.Font = new Font("Segoe UI", 10, FontStyle.Regular);
+            _lstLatestNotifications.IntegralHeight = false;
+            _lstLatestNotifications.DrawMode = DrawMode.OwnerDrawFixed;
+            _lstLatestNotifications.ItemHeight = 72;
+            _lstLatestNotifications.DrawItem += DrawHomeNotificationItem;
 
             // ===== Nút nhanh =====
+            var pnlActions = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Padding = new Padding(0, 8, 0, 0),
+                BackColor = Color.White
+            };
+            root.Controls.Add(pnlActions, 0, 1);
+            root.SetColumnSpan(pnlActions, 2);
+
             _btnGoBookingTab = new Button
             {
                 Text = "Đặt phòng ngay",
-                Left = 10,
-                Top = 450,
-                Width = 150,
-                Height = 30
+                Width = 160,
+                Height = 36,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(37, 99, 235),
+                ForeColor = Color.White
             };
+            _btnGoBookingTab.FlatAppearance.BorderSize = 0;
             _btnGoBookingTab.Click += (s, e) =>
             {
                 _tabMain.SelectedTab = _tabBooking;
             };
-            _tabHome.Controls.Add(_btnGoBookingTab);
+            // pnlActions.Controls.Add(_btnGoBookingTab);
 
             _btnGoMyWeekSchedule = new Button
             {
                 Text = "Xem lịch tuần này",
-                Left = 170,
-                Top = 450,
-                Width = 150,
-                Height = 30
+                Width = 170,
+                Height = 36,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(243, 244, 246),
+                ForeColor = Color.FromArgb(17, 24, 39)
             };
+            _btnGoMyWeekSchedule.FlatAppearance.BorderSize = 1;
+            _btnGoMyWeekSchedule.FlatAppearance.BorderColor = Color.FromArgb(229, 231, 235);
             _btnGoMyWeekSchedule.Click += (s, e) =>
             {
                 _tabMain.SelectedTab = _tabSchedule;
-                _radWeekView.Checked = true; // chuyển luôn sang week view
+                // Week view luôn được hiển thị (không còn Day view)
+                // Load lịch khi chuyển đến tab Schedule
+                ReloadScheduleForSelectedDate();
             };
-            _tabHome.Controls.Add(_btnGoMyWeekSchedule);
+            // pnlActions.Controls.Add(_btnGoMyWeekSchedule);
 
             // Nút sang tab Tài khoản
             _btnGoAccountTab = new Button
             {
                 Text = "Tài khoản của tôi",
-                Left = 330,
-                Top = 450,
-                Width = 150,
-                Height = 30
+                Width = 170,
+                Height = 36,
+                FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(243, 244, 246),
+                ForeColor = Color.FromArgb(17, 24, 39)
             };
+            _btnGoAccountTab.FlatAppearance.BorderSize = 1;
+            _btnGoAccountTab.FlatAppearance.BorderColor = Color.FromArgb(229, 231, 235);
             _btnGoAccountTab.Click += (s, e) =>
             {
                 _tabMain.SelectedTab = _tabAccount;
             };
-            _tabHome.Controls.Add(_btnGoAccountTab);
+            // pnlActions.Controls.Add(_btnGoAccountTab);
 
-            // Tạm thời load dữ liệu demo, sau này thay bằng dữ liệu thật từ server
-            LoadHomeDemoData();
+            // Tạm thởi load dữ liệu demo, sau này thay bằng dữ liệu thật từ server
+        }
+
+        private void DrawHomeNotificationItem(object? sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+            if (sender is not ListBox lb) return;
+            var raw = lb.Items[e.Index]?.ToString() ?? string.Empty;
+
+            e.DrawBackground();
+
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+
+            var pad = 8;
+            var rect = new Rectangle(e.Bounds.Left + pad, e.Bounds.Top + pad, e.Bounds.Width - pad * 2, e.Bounds.Height - pad * 2);
+            var iconRect = new Rectangle(rect.Left + 10, rect.Top + 10, 36, 36);
+            var textRect = new Rectangle(iconRect.Right + 10, rect.Top + 8, rect.Width - (iconRect.Width + 30), rect.Height - 16);
+
+            Color accent = Color.FromArgb(107, 114, 128);
+            var lower = raw.ToLowerInvariant();
+            if (lower.Contains("grant")) accent = Color.FromArgb(22, 163, 74);
+            else if (lower.Contains("check-in") || lower.Contains("checkin")) accent = Color.FromArgb(37, 99, 235);
+            else if (lower.Contains("hủy") || lower.Contains("cancel") || lower.Contains("no_show") || lower.Contains("no show")) accent = Color.FromArgb(220, 38, 38);
+            else if (lower.Contains("reminder") || lower.Contains("nhắc")) accent = Color.FromArgb(245, 158, 11);
+            else if (lower.Contains("change") || lower.Contains("chuyển") || lower.Contains("đổi")) accent = Color.FromArgb(14, 165, 233);
+
+            var glyph = "\uE946";
+            if (lower.Contains("grant")) glyph = "\uE73E";
+            else if (lower.Contains("check-in") || lower.Contains("checkin")) glyph = "\uE930";
+            else if (lower.Contains("hủy") || lower.Contains("cancel") || lower.Contains("no_show") || lower.Contains("no show")) glyph = "\uE711";
+            else if (lower.Contains("reminder") || lower.Contains("nhắc")) glyph = "\uE823";
+            else if (lower.Contains("change") || lower.Contains("chuyển") || lower.Contains("đổi")) glyph = "\uE8AC";
+
+            using (var bg = new SolidBrush(Color.White))
+            using (var border = new Pen(Color.FromArgb(229, 231, 235)))
+            using (var accentBrush = new SolidBrush(accent))
+            {
+                var gp = new GraphicsPath();
+                var r = rect;
+                int radius = 10;
+                gp.AddArc(r.Left, r.Top, radius, radius, 180, 90);
+                gp.AddArc(r.Right - radius, r.Top, radius, radius, 270, 90);
+                gp.AddArc(r.Right - radius, r.Bottom - radius, radius, radius, 0, 90);
+                gp.AddArc(r.Left, r.Bottom - radius, radius, radius, 90, 90);
+                gp.CloseFigure();
+
+                g.FillPath(bg, gp);
+                g.DrawPath(border, gp);
+                g.FillEllipse(accentBrush, iconRect);
+            }
+
+            using (var iconFont = new Font("Segoe MDL2 Assets", 16f, FontStyle.Regular))
+            {
+                TextRenderer.DrawText(
+                    g,
+                    glyph,
+                    iconFont,
+                    iconRect,
+                    Color.White,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix
+                );
+            }
+
+            var title = raw;
+            var idxDot = raw.IndexOf('.');
+            if (idxDot > 0 && idxDot <= 60) title = raw.Substring(0, idxDot + 1);
+            if (title.Length > 80) title = title.Substring(0, 77) + "...";
+
+            var body = raw;
+            if (!string.IsNullOrWhiteSpace(title) && body.StartsWith(title, StringComparison.Ordinal))
+            {
+                body = body.Substring(title.Length).TrimStart();
+            }
+
+            string timeText = string.Empty;
+            var m = System.Text.RegularExpressions.Regex.Match(raw, "\\b\\d{1,2}:\\d{2}\\b");
+            if (m.Success) timeText = m.Value;
+            else
+            {
+                var d = System.Text.RegularExpressions.Regex.Match(raw, "\\b\\d{1,2}/\\d{1,2}(/\\d{2,4})?\\b");
+                if (d.Success) timeText = d.Value;
+            }
+
+            var titleFont = new Font("Segoe UI", 9.8f, FontStyle.Bold);
+            var bodyFont = new Font("Segoe UI", 9f, FontStyle.Regular);
+            var metaFont = new Font("Segoe UI", 8.5f, FontStyle.Regular);
+
+            var titleRect = new Rectangle(textRect.Left, textRect.Top, textRect.Width, 22);
+            var bodyRect = new Rectangle(textRect.Left, textRect.Top + 22, textRect.Width, textRect.Height - 22);
+            TextRenderer.DrawText(g, title, titleFont, titleRect, Color.FromArgb(17, 24, 39), TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, body, bodyFont, bodyRect, Color.FromArgb(75, 85, 99), TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            if (!string.IsNullOrWhiteSpace(timeText))
+            {
+                var timeRect = new Rectangle(rect.Right - 110, rect.Top + 8, 100, 20);
+                TextRenderer.DrawText(g, timeText, metaFont, timeRect, Color.FromArgb(107, 114, 128), TextFormatFlags.Right | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            }
+
+            e.DrawFocusRectangle();
+        }
+
+        private void GridTodaySchedule_CellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
+        {
+            if (sender is not DataGridView grid) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            var col = grid.Columns[e.ColumnIndex].Name;
+
+            if (col == "Status")
+            {
+                var raw = (e.FormattedValue?.ToString() ?? string.Empty).Trim();
+                var status = raw.ToUpperInvariant();
+                (Color bg, Color fg, Color border) = GetStatusBadgeColors(status);
+
+                e.Paint(e.CellBounds, DataGridViewPaintParts.Background | DataGridViewPaintParts.Border);
+
+                var g = e.Graphics;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+
+                var padX = 8;
+                var padY = 6;
+                var badgeRect = new Rectangle(
+                    e.CellBounds.Left + padX,
+                    e.CellBounds.Top + padY,
+                    e.CellBounds.Width - padX * 2,
+                    e.CellBounds.Height - padY * 2
+                );
+
+                int radius = Math.Min(14, badgeRect.Height);
+                using (var b = new SolidBrush(bg))
+                using (var p = new Pen(border))
+                {
+                    var gp = new GraphicsPath();
+                    gp.AddArc(badgeRect.Left, badgeRect.Top, radius, radius, 180, 90);
+                    gp.AddArc(badgeRect.Right - radius, badgeRect.Top, radius, radius, 270, 90);
+                    gp.AddArc(badgeRect.Right - radius, badgeRect.Bottom - radius, radius, radius, 0, 90);
+                    gp.AddArc(badgeRect.Left, badgeRect.Bottom - radius, radius, radius, 90, 90);
+                    gp.CloseFigure();
+
+                    g.FillPath(b, gp);
+                    g.DrawPath(p, gp);
+                }
+
+                using (var f = new Font("Segoe UI", 8.5f, FontStyle.Bold))
+                {
+                    TextRenderer.DrawText(
+                        g,
+                        raw,
+                        f,
+                        badgeRect,
+                        fg,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix
+                    );
+                }
+
+                e.Handled = true;
+                return;
+            }
+
+            if (col == "TimeRange")
+            {
+                var raw = (e.FormattedValue?.ToString() ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(raw)) return;
+
+                string line1 = raw;
+                string line2 = string.Empty;
+
+                int open = raw.IndexOf('(');
+                int close = raw.IndexOf(')');
+                if (open > 0 && close > open)
+                {
+                    line1 = raw.Substring(0, open).Trim();
+                    line2 = raw.Substring(open + 1, close - open - 1).Trim();
+                }
+                else
+                {
+                    var m = System.Text.RegularExpressions.Regex.Match(raw, "\\b\\d{1,2}:\\d{2}\\s*[–-]\\s*\\d{1,2}:\\d{2}\\b");
+                    if (m.Success)
+                    {
+                        line2 = m.Value.Replace("-", "–").Replace(" ", "");
+                        line1 = raw.Replace(m.Value, "").Trim();
+                        if (string.IsNullOrWhiteSpace(line1)) line1 = raw;
+                    }
+                }
+
+                e.Paint(e.CellBounds, DataGridViewPaintParts.Background | DataGridViewPaintParts.Border);
+
+                var contentRect = Rectangle.Inflate(e.CellBounds, -10, -6);
+                var line1Rect = new Rectangle(contentRect.Left, contentRect.Top, contentRect.Width, 20);
+                var line2Rect = new Rectangle(contentRect.Left, contentRect.Top + 20, contentRect.Width, contentRect.Height - 20);
+
+                using (var f1 = new Font("Segoe UI", 9.5f, FontStyle.Bold))
+                using (var f2 = new Font("Segoe UI", 8.5f, FontStyle.Regular))
+                {
+                    TextRenderer.DrawText(e.Graphics, line1, f1, line1Rect, Color.FromArgb(17, 24, 39), TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                    if (!string.IsNullOrWhiteSpace(line2))
+                    {
+                        TextRenderer.DrawText(e.Graphics, line2, f2, line2Rect, Color.FromArgb(107, 114, 128), TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                    }
+                }
+
+                e.Handled = true;
+                return;
+            }
+        }
+
+        private void GridTodaySchedule_RowPostPaint(object? sender, DataGridViewRowPostPaintEventArgs e)
+        {
+            if (sender is not DataGridView grid) return;
+            if (e.RowIndex < 0) return;
+            if (!grid.Columns.Contains("Status")) return;
+
+            var statusRaw = grid.Rows[e.RowIndex].Cells["Status"].Value?.ToString() ?? string.Empty;
+            var status = statusRaw.Trim().ToUpperInvariant();
+            (Color bg, Color fg, Color border) = GetStatusBadgeColors(status);
+
+            var stripeRect = new Rectangle(e.RowBounds.Left + 1, e.RowBounds.Top + 1, 4, e.RowBounds.Height - 2);
+            using (var b = new SolidBrush(fg))
+            {
+                e.Graphics.FillRectangle(b, stripeRect);
+            }
+        }
+
+        private (Color bg, Color fg, Color border) GetStatusBadgeColors(string status)
+        {
+            if (status == "APPROVED") return (Color.FromArgb(220, 252, 231), Color.FromArgb(22, 163, 74), Color.FromArgb(187, 247, 208));
+            if (status == "IN_USE") return (Color.FromArgb(219, 234, 254), Color.FromArgb(37, 99, 235), Color.FromArgb(191, 219, 254));
+            if (status == "COMPLETED") return (Color.FromArgb(243, 244, 246), Color.FromArgb(75, 85, 99), Color.FromArgb(229, 231, 235));
+            if (status == "NO_SHOW" || status == "NO SHOW") return (Color.FromArgb(254, 226, 226), Color.FromArgb(220, 38, 38), Color.FromArgb(254, 202, 202));
+            if (status == "FIXED") return (Color.FromArgb(254, 249, 195), Color.FromArgb(202, 138, 4), Color.FromArgb(253, 230, 138));
+            if (status == "HỌC" || status == "HOC") return (Color.FromArgb(237, 233, 254), Color.FromArgb(109, 40, 217), Color.FromArgb(221, 214, 254));
+            return (Color.FromArgb(243, 244, 246), Color.FromArgb(55, 65, 81), Color.FromArgb(229, 231, 235));
         }
         private void MainClientForm_FormClosing(object? sender, FormClosingEventArgs e)
         {
@@ -792,7 +1297,7 @@ namespace BookingClient
         }
 
         /// <summary>
-        /// Tạm thời: dữ liệu demo cho tab Trang chủ.
+        /// Tạm thởi: dữ liệu demo cho tab Trang chủ.
         /// Sau này bạn sẽ replace bằng call server để lấy:
         /// - Lịch cố định của SV / GV
         /// - Booking của user hôm nay
@@ -840,10 +1345,58 @@ namespace BookingClient
         // ================== 2.4. TAB ĐẶT PHÒNG ==================
         private void BuildBookingTabUi()
         {
+            _tabBooking.Controls.Clear();
             _tabBooking.AutoScroll = true;
+            _tabBooking.BackColor = Color.White;
 
             // ================= A. FILTER + LIST PHÒNG =================
-            var grpSearch = new GroupBox
+            _pnlBookingWizardHeader = new Panel
+            {
+                Left = 10,
+                Top = 10,
+                Width = 950,
+                Height = 60,
+                BackColor = Color.White
+            };
+            _tabBooking.Controls.Add(_pnlBookingWizardHeader);
+
+            _lblBookingStep1 = new Label
+            {
+                Left = 0,
+                Top = 10,
+                Width = 260,
+                Height = 40,
+                Text = "1. Bộ lọc",
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(17, 24, 39)
+            };
+        //  _pnlBookingWizardHeader.Controls.Add(_lblBookingStep1);
+
+            _lblBookingStep2 = new Label
+            {
+                Left = 270,
+                Top = 10,
+                Width = 320,
+                Height = 40,
+                Text = "2. Chọn phòng",
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(107, 114, 128)
+            };
+            // _pnlBookingWizardHeader.Controls.Add(_lblBookingStep2);
+
+            _lblBookingStep3 = new Label
+            {
+                Left = 600,
+                Top = 10,
+                Width = 340,
+                Height = 40,
+                Text = "3. Chọn slot",
+                Font = new Font("Segoe UI", 11f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(107, 114, 128)
+            };
+            // _pnlBookingWizardHeader.Controls.Add(_lblBookingStep3);
+
+            _grpSearchRooms = new GroupBox
             {
                 Text = "Danh sách phòng",
                 Left = 10,
@@ -851,7 +1404,7 @@ namespace BookingClient
                 Width = 950,
                 Height = 140
             };
-            _tabBooking.Controls.Add(grpSearch);
+            _tabBooking.Controls.Add(_grpSearchRooms);
 
             // Ngày
             var lblDate = new Label
@@ -861,7 +1414,7 @@ namespace BookingClient
                 Top = 70,
                 Width = 50
             };
-            grpSearch.Controls.Add(lblDate);
+            _grpSearchRooms.Controls.Add(lblDate);
 
             _dtBookingDate = new DateTimePicker
             {
@@ -871,7 +1424,7 @@ namespace BookingClient
                 Format = DateTimePickerFormat.Custom,
                 CustomFormat = "dd/MM/yyyy"
             };
-            grpSearch.Controls.Add(_dtBookingDate);
+            _grpSearchRooms.Controls.Add(_dtBookingDate);
 
             // Building
             var lblBuilding = new Label
@@ -881,7 +1434,7 @@ namespace BookingClient
                 Top = 70,
                 Width = 60
             };
-            grpSearch.Controls.Add(lblBuilding);
+            _grpSearchRooms.Controls.Add(lblBuilding);
 
             _cbBuilding = new ComboBox
             {
@@ -890,11 +1443,9 @@ namespace BookingClient
                 Width = 200,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
-            grpSearch.Controls.Add(_cbBuilding);
+            _grpSearchRooms.Controls.Add(_cbBuilding);
             _cbBuilding.Items.Clear();
             _cbBuilding.Items.Add("ALL");
-            _cbBuilding.Items.Add("CS1 - Tòa A");
-            _cbBuilding.Items.Add("CS1 - Tòa B");
             _cbBuilding.SelectedIndex = 0;
 
             // Sức chứa
@@ -905,7 +1456,7 @@ namespace BookingClient
                 Top = 70,
                 Width = 80
             };
-            grpSearch.Controls.Add(lblCapacity);
+            _grpSearchRooms.Controls.Add(lblCapacity);
 
             _numMinCapacity = new NumericUpDown
             {
@@ -916,7 +1467,7 @@ namespace BookingClient
                 Maximum = 500,
                 Value = 0
             };
-            grpSearch.Controls.Add(_numMinCapacity);
+            _grpSearchRooms.Controls.Add(_numMinCapacity);
 
             // Nút load phòng
             _btnSearchRooms = new Button
@@ -927,7 +1478,7 @@ namespace BookingClient
                 Width = 200,
                 Height = 30
             };
-            grpSearch.Controls.Add(_btnSearchRooms);
+            _grpSearchRooms.Controls.Add(_btnSearchRooms);
 
             // ===== Hàng 2: checkbox filter theo tiện nghi =====
             _chkNeedProjector = new CheckBox
@@ -937,7 +1488,7 @@ namespace BookingClient
                 Top = 90,
                 Width = 130
             };
-            grpSearch.Controls.Add(_chkNeedProjector);
+            _grpSearchRooms.Controls.Add(_chkNeedProjector);
             _chkNeedPC = new CheckBox
             {
                 Text = "Cần PC",
@@ -945,7 +1496,7 @@ namespace BookingClient
                 Top = 90,
                 Width = 100
             };
-            grpSearch.Controls.Add(_chkNeedPC);
+            _grpSearchRooms.Controls.Add(_chkNeedPC);
             _chkNeedAC = new CheckBox
             {
                 Text = "Cần điều hòa",
@@ -953,7 +1504,7 @@ namespace BookingClient
                 Top = 90,
                 Width = 120
             };
-            grpSearch.Controls.Add(_chkNeedAC);
+            _grpSearchRooms.Controls.Add(_chkNeedAC);
             _chkNeedMic = new CheckBox
             {
                 Text = "Cần micro",
@@ -961,18 +1512,19 @@ namespace BookingClient
                 Top = 90,
                 Width = 120
             };
-            grpSearch.Controls.Add(_chkNeedMic);
+            _grpSearchRooms.Controls.Add(_chkNeedMic);
 
             // Sự kiện filter: chỉ gọi ApplyRoomFilter (không gửi lệnh mới lên server)
-            _cbBuilding.SelectedIndexChanged += (s, e) => ApplyRoomFilter();
-            _numMinCapacity.ValueChanged += (s, e) => ApplyRoomFilter();
-            _chkNeedProjector.CheckedChanged += (s, e) => ApplyRoomFilter();
-            _chkNeedPC.CheckedChanged += (s, e) => ApplyRoomFilter();
-            _chkNeedAC.CheckedChanged += (s, e) => ApplyRoomFilter();
-            _chkNeedMic.CheckedChanged += (s, e) => ApplyRoomFilter();
+            _cbBuilding.SelectedIndexChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
+            _numMinCapacity.ValueChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
+            _chkNeedProjector.CheckedChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
+            _chkNeedPC.CheckedChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
+            _chkNeedAC.CheckedChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
+            _chkNeedMic.CheckedChanged += (s, e) => { SetBookingWizardStep(1); ApplyRoomFilter(); };
 
             _btnSearchRooms.Click += async (s, e) =>
             {
+                SetBookingWizardStep(2);
                 await LoadRoomsFromServerAsync();
                 // ApplyRoomFilter();
             };
@@ -981,8 +1533,8 @@ namespace BookingClient
             _gridRooms = new DataGridView
             {
                 Left = 10,
-                Top = grpSearch.Bottom + 5,
-                Width = 450,
+                Top = _grpSearchRooms.Bottom + 5,
+                Width = 950,
                 Height = 220,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
@@ -993,6 +1545,7 @@ namespace BookingClient
                 AutoGenerateColumns = false
             };
             _tabBooking.Controls.Add(_gridRooms);
+            _gridRooms.Visible = false;
 
             _gridRooms.Columns.Clear();
             _gridRooms.Columns.Add(new DataGridViewTextBoxColumn
@@ -1022,10 +1575,40 @@ namespace BookingClient
 
             _gridRooms.SelectionChanged += async (s, e) =>
             {
+                if (_suppressRoomSelectionHandler) return;
                 if (_gridRooms.CurrentRow == null) return;
 
                 var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
                 if (string.IsNullOrEmpty(roomId)) return;
+
+                if (IsRoomDisabled(roomId))
+                {
+                    _suppressRoomSelectionHandler = true;
+                    try
+                    {
+                        if (!string.IsNullOrWhiteSpace(_lastEnabledRoomId))
+                            SelectRoomInGridByRoomId(_lastEnabledRoomId);
+                        else
+                        {
+                            foreach (DataGridViewRow r in _gridRooms.Rows)
+                            {
+                                if (r.DataBoundItem is RoomSearchRow rs && !IsRoomDisabled(rs.RoomId))
+                                {
+                                    _gridRooms.CurrentCell = r.Cells["RoomId"];
+                                    r.Selected = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        _suppressRoomSelectionHandler = false;
+                    }
+                    return;
+                }
+
+                _lastEnabledRoomId = roomId;
 
                 var date = _dtBookingDate.Value;
 
@@ -1034,6 +1617,20 @@ namespace BookingClient
 
                 await ReloadSlotsForSelectedRoomAsync();
             };
+
+            _flpRoomCards = new FlowLayoutPanel
+            {
+                Left = 10,
+                Top = _grpSearchRooms.Bottom + 5,
+                Width = 950,
+                Height = 220,
+                AutoScroll = true,
+                WrapContents = true,
+                FlowDirection = FlowDirection.LeftToRight,
+                BackColor = Color.White,
+                Padding = new Padding(6)
+            };
+            _tabBooking.Controls.Add(_flpRoomCards);
 
             _dtBookingDate.ValueChanged += async (s, e) =>
             {
@@ -1046,15 +1643,16 @@ namespace BookingClient
             };
 
             // ================= B. SLOT LIST CỦA PHÒNG =================
-            var grpSlots = new GroupBox
+            _grpRoomSlots = new GroupBox
             {
                 Text = "Slot trong ngày của phòng",
                 Left = _gridRooms.Right + 10,
-                Top = grpSearch.Bottom + 5,
+                Top = _grpSearchRooms.Bottom + 5,
                 Width = 510,
                 Height = 220
             };
-            _tabBooking.Controls.Add(grpSlots);
+            _tabBooking.Controls.Add(_grpRoomSlots);
+            _grpRoomSlots.Visible = false;
 
             _gridRoomSlots = new DataGridView
             {
@@ -1067,7 +1665,7 @@ namespace BookingClient
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 AutoGenerateColumns = false
             };
-            grpSlots.Controls.Add(_gridRoomSlots);
+            _grpRoomSlots.Controls.Add(_gridRoomSlots);
             _gridRoomSlots.CurrentCellDirtyStateChanged += (s, e) =>
             {
                 if (_gridRoomSlots.IsCurrentCellDirty)
@@ -1205,12 +1803,34 @@ namespace BookingClient
             _bsMyBookings.DataSource = _myBookings;
             _gridMyBookings.DataSource = _bsMyBookings;
 
+            // Làm nổi bật lịch cố định (Status == "FIXED")
+            _gridMyBookings.CellFormatting += (s, e) =>
+            {
+                if (_gridMyBookings.Columns[e.ColumnIndex].Name == "Status")
+                {
+                    var row = _gridMyBookings.Rows[e.RowIndex].DataBoundItem as MyBookingRow;
+                    if (row != null && row.Status == "FIXED")
+                    {
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.BackColor = Color.LightGoldenrodYellow;
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.Font = new Font(_gridMyBookings.Font, FontStyle.Bold);
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.ForeColor = Color.DarkOrange;
+                    }
+                    else
+                    {
+                        // Reset nếu không phải fixed
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.BackColor = Color.White;
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.Font = _gridMyBookings.Font;
+                        _gridMyBookings.Rows[e.RowIndex].DefaultCellStyle.ForeColor = Color.Black;
+                    }
+                }
+            };
+
             // Text lý do
             var lblPurpose = new Label
             {
                 Text = "Lý do:",
                 Left = 740,
-                Top = 30,
+                Top = 29,
                 Width = 50
             };
             grpMyBookings.Controls.Add(lblPurpose);
@@ -1234,7 +1854,7 @@ namespace BookingClient
                 Width = 90,
                 Height = 30
             };
-            grpMyBookings.Controls.Add(_btnRequest);
+            // grpMyBookings.Controls.Add(_btnRequest);
             _btnRequest.Click += BtnRequest_Click;
 
             // Nút RELEASE booking
@@ -1265,12 +1885,9 @@ namespace BookingClient
             _grpClientLog = new GroupBox
             {
                 Text = "Client log (debug)",
-                Left = 10,
-                Top = _lblRequestStatus.Bottom + 5,
-                Width = 950,
-                Height = 120
+                Dock = DockStyle.Fill
             };
-            _tabBooking.Controls.Add(_grpClientLog);
+            _tabLog.Controls.Add(_grpClientLog);
 
             _txtClientLog = new TextBox
             {
@@ -1289,7 +1906,7 @@ namespace BookingClient
                 Left = 840,
                 Top = _grpClientLog.Bottom + 5
             };
-            _tabBooking.Controls.Add(_btnBackToHome);
+            // _tabBooking.Controls.Add(_btnBackToHome);
 
             _btnBackToHome.Click += (s, e) =>
             {
@@ -1297,6 +1914,478 @@ namespace BookingClient
             };
 
             // InitBookingTabData();      // dùng lại init cũ nhưng chỉ lấy SlotConfig + Building
+            SetBookingWizardStep(1);
+        }
+
+        private void SetBookingWizardStep(int step)
+        {
+            if (_lblBookingStep1 == null || _lblBookingStep2 == null || _lblBookingStep3 == null) return;
+
+            var active = Color.FromArgb(17, 24, 39);
+            var inactive = Color.FromArgb(107, 114, 128);
+
+            _lblBookingStep1.ForeColor = step == 1 ? active : inactive;
+            _lblBookingStep2.ForeColor = step == 2 ? active : inactive;
+            _lblBookingStep3.ForeColor = step == 3 ? active : inactive;
+        }
+
+        private void RenderRoomCards(IEnumerable<RoomSearchRow> rooms)
+        {
+            if (_flpRoomCards == null) return;
+
+            _flpRoomCards.SuspendLayout();
+            try
+            {
+                _flpRoomCards.Controls.Clear();
+                _roomCardById.Clear();
+
+                var list = rooms.ToList();
+                if (list.Count == 0)
+                {
+                    var empty = new Label
+                    {
+                        AutoSize = false,
+                        Width = _flpRoomCards.ClientSize.Width - 24,
+                        Height = 80,
+                        Text = "Không có phòng phù hợp bộ lọc hiện tại.",
+                        TextAlign = ContentAlignment.MiddleCenter,
+                        ForeColor = Color.FromArgb(107, 114, 128),
+                        Font = new Font("Segoe UI", 10f, FontStyle.Italic),
+                        Margin = new Padding(8)
+                    };
+                    _flpRoomCards.Controls.Add(empty);
+                    _selectedRoomCardId = null;
+                    return;
+                }
+
+                foreach (var r in list)
+                {
+                    var card = CreateRoomCard(r);
+                    _flpRoomCards.Controls.Add(card);
+                }
+
+                if (!string.IsNullOrWhiteSpace(_selectedRoomCardId) && _roomCardById.TryGetValue(_selectedRoomCardId, out var selectedCard))
+                {
+                    ApplyRoomCardSelectedStyle(selectedCard, true);
+                }
+            }
+            finally
+            {
+                _flpRoomCards.ResumeLayout();
+            }
+        }
+
+        private Control CreateRoomCard(RoomSearchRow r)
+        {
+            var card = new Panel
+            {
+                Width = 220,
+                Height = 110,
+                BackColor = Color.White,
+                Margin = new Padding(8),
+                Cursor = Cursors.Hand,
+                BorderStyle = BorderStyle.FixedSingle,
+                Tag = r.RoomId
+            };
+
+            _roomCardById[r.RoomId] = card;
+
+            var lblRoom = new Label
+            {
+                Left = 12,
+                Top = 12,
+                Width = 180,
+                Height = 22,
+                Text = r.RoomId,
+                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(17, 24, 39)
+            };
+            card.Controls.Add(lblRoom);
+
+            var lblMeta = new Label
+            {
+                Left = 12,
+                Top = 38,
+                Width = 200,
+                Height = 18,
+                Text = $"{r.Building} • {r.Capacity}",
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(107, 114, 128)
+            };
+            card.Controls.Add(lblMeta);
+
+            var statusText = (r.Status ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(statusText)) statusText = "UNKNOWN";
+
+            var lblStatus = new Label
+            {
+                Left = 12,
+                Top = 62,
+                Width = 200,
+                Height = 18,
+                Text = statusText,
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(55, 65, 81)
+            };
+            card.Controls.Add(lblStatus);
+
+            var lblAmenities = new Label
+            {
+                Left = 12,
+                Top = 84,
+                Width = 200,
+                Height = 18,
+                Text = BuildAmenitiesText(r),
+                Font = new Font("Segoe UI", 8.5f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(107, 114, 128)
+            };
+            card.Controls.Add(lblAmenities);
+
+            EventHandler click = async (s, e) =>
+            {
+                if (string.Equals(NormalizeRoomStatus(r.Status), "DISABLED", StringComparison.OrdinalIgnoreCase))
+                    return;
+                SetSelectedRoomCard(r.RoomId);
+                SetBookingWizardStep(3);
+                await OpenSlotPickerForRoomAsync(r.RoomId);
+                SetBookingWizardStep(2);
+            };
+
+            card.Click += click;
+            lblRoom.Click += click;
+            lblMeta.Click += click;
+            lblStatus.Click += click;
+            lblAmenities.Click += click;
+
+            if (string.Equals(NormalizeRoomStatus(r.Status), "DISABLED", StringComparison.OrdinalIgnoreCase))
+            {
+                card.BackColor = Color.FromArgb(243, 244, 246);
+                card.Cursor = Cursors.No;
+                lblRoom.ForeColor = Color.FromArgb(156, 163, 175);
+                lblStatus.ForeColor = Color.FromArgb(156, 163, 175);
+            }
+
+            return card;
+        }
+
+        private void SetSelectedRoomCard(string roomId)
+        {
+            if (string.IsNullOrWhiteSpace(roomId)) return;
+
+            if (!string.IsNullOrWhiteSpace(_selectedRoomCardId) && _roomCardById.TryGetValue(_selectedRoomCardId, out var oldCard))
+            {
+                ApplyRoomCardSelectedStyle(oldCard, false);
+            }
+
+            _selectedRoomCardId = roomId;
+            if (_roomCardById.TryGetValue(roomId, out var newCard))
+            {
+                ApplyRoomCardSelectedStyle(newCard, true);
+            }
+        }
+
+        private void ApplyRoomCardSelectedStyle(Panel card, bool selected)
+        {
+            if (selected)
+            {
+                card.BackColor = Color.FromArgb(239, 246, 255);
+                card.BorderStyle = BorderStyle.FixedSingle;
+            }
+            else
+            {
+                card.BackColor = Color.White;
+                card.BorderStyle = BorderStyle.FixedSingle;
+            }
+        }
+
+        private string BuildAmenitiesText(RoomSearchRow r)
+        {
+            var parts = new List<string>();
+            if (r.HasProjector) parts.Add("Projector");
+            if (r.HasPC) parts.Add("PC");
+            if (r.HasAC) parts.Add("AC");
+            if (r.HasMic) parts.Add("Mic");
+            if (parts.Count == 0) return "(Không có tiện nghi)";
+            return string.Join(" • ", parts);
+        }
+
+        private void SelectRoomInGridByRoomId(string roomId)
+        {
+            if (_gridRooms == null) return;
+
+            foreach (DataGridViewRow row in _gridRooms.Rows)
+            {
+                var id = row.Cells["RoomId"].Value?.ToString();
+                if (!string.Equals(id, roomId, StringComparison.OrdinalIgnoreCase)) continue;
+
+                _gridRooms.ClearSelection();
+                row.Selected = true;
+                _gridRooms.CurrentCell = row.Cells["RoomId"];
+                return;
+            }
+        }
+
+        private async Task OpenSlotPickerForRoomAsync(string roomId)
+        {
+            if (_grpRoomSlots == null || _dtBookingDate == null) return;
+
+            if (IsRoomDisabled(roomId))
+                return;
+
+            _suppressRoomSelectionHandler = true;
+            try
+            {
+                SelectRoomInGridByRoomId(roomId);
+                await UpdateRoomSlotsSubscriptionAsync(roomId, _dtBookingDate.Value);
+                await ReloadSlotsForSelectedRoomAsync();
+            }
+            finally
+            {
+                _suppressRoomSelectionHandler = false;
+            }
+
+            var oldParent = _grpRoomSlots.Parent;
+            var oldBounds = _grpRoomSlots.Bounds;
+            var oldDock = _grpRoomSlots.Dock;
+            var oldVisible = _grpRoomSlots.Visible;
+
+            using (var dlg = new Form())
+            {
+                dlg.Text = $"Chọn slot - {roomId}";
+                dlg.StartPosition = FormStartPosition.CenterParent;
+                dlg.FormBorderStyle = FormBorderStyle.FixedDialog;
+                dlg.MinimizeBox = false;
+                dlg.MaximizeBox = false;
+                dlg.ShowInTaskbar = false;
+                dlg.BackColor = Color.White;
+                dlg.Width = 820;
+                dlg.Height = 560;
+
+                var header = new Panel { Dock = DockStyle.Top, Height = 54, BackColor = Color.White };
+                dlg.Controls.Add(header);
+
+                var title = new Label
+                {
+                    Left = 16,
+                    Top = 12,
+                    Width = 760,
+                    Height = 28,
+                    Text = $"Chọn slot cho phòng {roomId} ({_dtBookingDate.Value:dd/MM/yyyy})",
+                    Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+                    ForeColor = Color.FromArgb(17, 24, 39)
+                };
+                header.Controls.Add(title);
+
+                var footer = new Panel { Dock = DockStyle.Bottom, Height = 56, BackColor = Color.White };
+                dlg.Controls.Add(footer);
+
+                var lblPurpose = new Label
+                {
+                    Left = 16,
+                    Top = 10,
+                    Width = 44,
+                    Height = 34,
+                    Text = "Lý do",
+                    TextAlign = ContentAlignment.MiddleLeft
+                };
+                footer.Controls.Add(lblPurpose);
+
+                var txtPurpose = new TextBox
+                {
+                    Left = 64,
+                    Top = 12,
+                    Width = 430,
+                    Height = 28
+                };
+                txtPurpose.Text = _txtPurpose?.Text ?? string.Empty;
+                footer.Controls.Add(txtPurpose);
+
+                var btnRequest = new Button
+                {
+                    Text = "Gửi REQUEST",
+                    Width = 130,
+                    Height = 34,
+                    Left = 510,
+                    Top = 10
+                };
+                footer.Controls.Add(btnRequest);
+
+                var btnClose = new Button
+                {
+                    Text = "Đóng",
+                    Width = 120,
+                    Height = 34,
+                    Left = 650,
+                    Top = 10,
+                    Anchor = AnchorStyles.Right | AnchorStyles.Top
+                };
+                btnClose.Click += (s, e) => dlg.Close();
+                footer.Controls.Add(btnClose);
+
+                btnRequest.Click += async (s, e) =>
+                {
+                    if (_txtPurpose != null)
+                        _txtPurpose.Text = txtPurpose.Text;
+
+                    bool sent = await TrySendBookingRequestAsync();
+                    if (sent)
+                        dlg.Close();
+                };
+
+                _grpRoomSlots.Parent = dlg;
+                _grpRoomSlots.Dock = DockStyle.Fill;
+                _grpRoomSlots.Visible = true;
+                dlg.Controls.SetChildIndex(_grpRoomSlots, 1);
+
+                dlg.ShowDialog(this);
+
+                _grpRoomSlots.Parent = oldParent;
+                _grpRoomSlots.Dock = oldDock;
+                _grpRoomSlots.Bounds = oldBounds;
+                _grpRoomSlots.Visible = oldVisible;
+            }
+        }
+
+        private async Task<bool> TrySendBookingRequestAsync()
+        {
+            try
+            {
+                if (_currentUser == null)
+                {
+                    MessageBox.Show("Chưa đăng nhập.");
+                    return false;
+                }
+                if (_writer == null)
+                {
+                    MessageBox.Show("Chưa kết nối server.");
+                    return false;
+                }
+                if (_gridRooms.CurrentRow == null)
+                {
+                    MessageBox.Show("Vui lòng chọn phòng.");
+                    return false;
+                }
+
+                var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
+                if (string.IsNullOrWhiteSpace(roomId))
+                {
+                    MessageBox.Show("Phòng không hợp lệ.");
+                    return false;
+                }
+
+                if (IsRoomDisabled(roomId))
+                {
+                    MessageBox.Show("Phòng đang DISABLED, không thể request.");
+                    return false;
+                }
+
+                var purpose = _txtPurpose.Text.Trim();
+                if (string.IsNullOrWhiteSpace(purpose))
+                {
+                    MessageBox.Show("Vui lòng nhập lý do mượn phòng.");
+                    return false;
+                }
+
+                var selected = _currentRoomSlots
+                    .Where(r => r.Selected)
+                    .ToList();
+
+                if (selected.Count == 0)
+                {
+                    MessageBox.Show("Vui lòng tick ít nhất 1 slot để request.");
+                    return false;
+                }
+
+                var dateKey = _dtBookingDate.Value.ToString("yyyy-MM-dd");
+
+                foreach (var s in selected)
+                {
+                    int slotIdx = ParseSlotIndexSafe(s.SlotId);
+                    if (slotIdx <= 0) continue;
+
+                    bool overlapWithGrantedBooking = _myBookings.Any(b =>
+                    {
+                        if (!IsGrantedBookingStatus(b.Status)) return false;
+                        if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
+                            return false;
+                        int start = ParseSlotIndexSafe(b.SlotStartId);
+                        int end = ParseSlotIndexSafe(b.SlotEndId);
+                        if (start <= 0 || end < start) return false;
+                        return slotIdx >= start && slotIdx <= end;
+                    });
+
+                    if (overlapWithGrantedBooking)
+                    {
+                        MessageBox.Show(
+                            $"Slot {s.SlotId} trùng với một booking đã được GRANT của bạn.\nKhông được request chồng (kể cả single/range).",
+                            "Request",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning
+                        );
+                        return false;
+                    }
+                }
+
+                var ordered = selected
+                    .Select(s => new { Row = s, Index = ParseSlotIndexSafe(s.SlotId) })
+                    .Where(x => x.Index > 0)
+                    .OrderBy(x => x.Index)
+                    .ToList();
+
+                if (ordered.Count == 0)
+                {
+                    MessageBox.Show("Slot không hợp lệ.");
+                    return false;
+                }
+
+                bool isContinuous = true;
+                for (int i = 1; i < ordered.Count; i++)
+                {
+                    if (ordered[i].Index != ordered[i - 1].Index + 1)
+                    {
+                        isContinuous = false;
+                        break;
+                    }
+                }
+
+                string slotFrom = ordered.First().Row.SlotId;
+                string slotTo = ordered.Last().Row.SlotId;
+
+                if (!isContinuous && ordered.Count > 1)
+                {
+                    MessageBox.Show("Các slot được chọn phải liên tục (S3, S4, S5...).");
+                    return false;
+                }
+
+                string safePurpose = purpose
+                    .Replace("|", "/")
+                    .Replace("\r", " ")
+                    .Replace("\n", " ");
+
+                string cmd;
+                if (ordered.Count == 1)
+                {
+                    cmd = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotFrom}|{dateKey}|{safePurpose}";
+                }
+                else
+                {
+                    cmd = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{dateKey}|{safePurpose}";
+                }
+
+                AppendClientLog("[SEND] " + cmd);
+                await _writer.WriteLineAsync(cmd);
+
+                _lblRequestStatus.ForeColor = Color.Blue;
+                _lblRequestStatus.Text = $"Đang gửi REQUEST cho {roomId}: {slotFrom} → {slotTo}";
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog("[ERROR] BtnRequest_Click: " + ex.Message);
+                MessageBox.Show("Request lỗi: " + ex.Message);
+                return false;
+            }
         }
         private async Task ReloadSlotsForSelectedRoomAsync()
         {
@@ -1330,11 +2419,31 @@ namespace BookingClient
 
             if (_writer == null)
             {
-                MessageBox.Show("Chưa kết nối server.");
+                MessageBox.Show("TCP chưa sẵn sàng.");
                 return;
             }
 
             string cmd = $"GET_MY_BOOKINGS|{_currentUser.UserId}";
+            AppendClientLog("[SEND] " + cmd);
+            await _writer.WriteLineAsync(cmd);
+        }
+
+        private async Task LoadFixedSchedulesFromServerAsync()
+        {
+            if (_currentUser == null)
+                return;
+
+            if (_writer == null)
+            {
+                AppendClientLog("[WARN] LoadFixedSchedulesFromServerAsync: TCP chưa sẵn sàng");
+                return;
+            }
+
+            // Lấy fixed schedules cho 6 tháng tới
+            var fromDate = DateTime.Today.ToString("yyyy-MM-dd");
+            var toDate = DateTime.Today.AddMonths(6).ToString("yyyy-MM-dd");
+            
+            string cmd = $"GET_FIXED_SESSIONS|{_currentUser.UserId}|{fromDate}|{toDate}";
             AppendClientLog("[SEND] " + cmd);
             await _writer.WriteLineAsync(cmd);
         }
@@ -1353,15 +2462,25 @@ namespace BookingClient
                 if (_numMinCapacity.Value > 0 && r.Capacity < (int)_numMinCapacity.Value)
                     continue;
 
-                if (_cbBuilding.SelectedIndex > 0 &&
-                    r.Building != _cbBuilding.SelectedItem.ToString())
-                    continue;
+                if (_cbBuilding.SelectedIndex > 0)
+                {
+                    var selectedBuilding = _cbBuilding.SelectedItem?.ToString();
+                    if (selectedBuilding != null && !string.Equals(r.Building, selectedBuilding, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
 
                 filtered.Add(r);
             }
 
             _gridRooms.DataSource = null;
             _gridRooms.DataSource = filtered;
+            ApplyRoomsGridDisabledStyle();
+
+            if (_flpRoomCards != null)
+            {
+                RenderRoomCards(filtered);
+                if (filtered.Count > 0) SetBookingWizardStep(2);
+            }
         }
 
         private async Task LoadRoomsFromServerAsync()
@@ -1386,16 +2505,19 @@ namespace BookingClient
             {
                 _allRoomsForSearch.Add(new RoomSearchRow
                 {
-                    RoomId = r.RoomId,
-                    Building = r.Building,
+                    RoomId = r.RoomId!,
+                    Building = r.Building!,
                     Capacity = r.Capacity,
                     HasProjector = r.HasProjector,
                     HasPC = r.HasPC,
                     HasAC = r.HasAirConditioner,
                     HasMic = r.HasMic,
-                    Status = r.Status
+                    Status = NormalizeRoomStatus(r.Status)
                 });
             }
+
+            RefreshBuildingComboFromRooms();
+            RefreshReqRoomComboFromRooms();
 
             // _gridRooms.DataSource = null;
             // _gridRooms.DataSource = _allRoomsForSearch;
@@ -1437,66 +2559,21 @@ namespace BookingClient
             if (_cbReqSlotTo.Items.Count > 0)
                 _cbReqSlotTo.SelectedIndex = 4;
 
-            // Ngày default = hôm nay theo server offset
+            // Ngày default = hôm nay theo server
             var now = DateTime.Now + _serverTimeOffset;
             _dtBookingDate.Value = now.Date;
             _dtReqDate.Value = now.Date;
 
-            // Building demo
-            _cbBuilding.Items.Clear();
-            _cbBuilding.Items.Add("ALL");
-            _cbBuilding.Items.Add("CS1 - Tòa A");
-            _cbBuilding.Items.Add("CS1 - Tòa B");
-            _cbBuilding.SelectedIndex = 0;
-
-            // Demo room list – sau này bạn có thể thay bằng data lấy từ server
-            if (_allRoomsForSearch.Count == 0)
+            if (_cbBuilding != null)
             {
-                _allRoomsForSearch.Add(new RoomSearchRow
-                {
-                    RoomId = "A08",
-                    Building = "CS1 - Tòa A",
-                    Capacity = 60,
-                    HasProjector = true,
-                    HasPC = true,
-                    HasAC = true,
-                    HasMic = true,
-                    Status = "FREE"
-                });
-                _allRoomsForSearch.Add(new RoomSearchRow
-                {
-                    RoomId = "A16",
-                    Building = "CS1 - Tòa A",
-                    Capacity = 80,
-                    HasProjector = true,
-                    HasPC = false,
-                    HasAC = true,
-                    HasMic = true,
-                    Status = "FREE"
-                });
-                _allRoomsForSearch.Add(new RoomSearchRow
-                {
-                    RoomId = "B03",
-                    Building = "CS1 - Tòa B",
-                    Capacity = 40,
-                    HasProjector = false,
-                    HasPC = true,
-                    HasAC = false,
-                    HasMic = false,
-                    Status = "FREE"
-                });
+                _cbBuilding.Items.Clear();
+                _cbBuilding.Items.Add("ALL");
+                _cbBuilding.SelectedIndex = 0;
             }
 
-            // Fill combobox phòng từ danh sách rooms
-            _cbReqRoom.Items.Clear();
-            foreach (var r in _allRoomsForSearch)
-            {
-                _cbReqRoom.Items.Add(r.RoomId);
-            }
-            if (_cbReqRoom.Items.Count > 0)
-                _cbReqRoom.SelectedIndex = 0;
+            RefreshReqRoomComboFromRooms();
 
-            // Event đổi slot → cập nhật label thời gian ca
+            // Event đổi slot → cập nhật label thởi gian ca
             _cbReqSlotSingle.SelectedIndexChanged += (s, e) => UpdateSlotTimeLabel();
             _cbReqSlotFrom.SelectedIndexChanged += (s, e) => UpdateSlotTimeLabel();
             _cbReqSlotTo.SelectedIndexChanged += (s, e) => UpdateSlotTimeLabel();
@@ -1557,97 +2634,117 @@ namespace BookingClient
         // ================== 2.5. TAB "LỊCH CỦA TÔI" ==================
         private void BuildScheduleTabUi()
         {
-            // ==== Thanh trên: Ngày / Tuần + DatePicker + Export + Back ====
-            _radDayView = new RadioButton
-            {
-                Left = 10,
-                Top = 100,
-                Width = 80,
-                Text = "Ngày",
-                Checked = true
-            };
-            _radWeekView = new RadioButton
-            {
-                Left = 100,
-                Top = 100,
-                Width = 80,
-                Text = "Tuần"
-            };
-            _tabSchedule.Controls.Add(_radDayView);
-            _tabSchedule.Controls.Add(_radWeekView);
+            _tabSchedule.Controls.Clear();
+            _tabSchedule.BackColor = Color.White;
 
-            var lblDate = new Label
+            if (_ttSchedule == null)
             {
-                Left = 200,
-                Top = 100,
-                Width = 60,
-                Text = "Ngày:"
-            };
-            _dtScheduleDate = new DateTimePicker
+                _ttSchedule = new ToolTip
+                {
+                    AutoPopDelay = 8000,
+                    InitialDelay = 250,
+                    ReshowDelay = 100,
+                    ShowAlways = true
+                };
+            }
+
+            var root = new TableLayoutPanel
             {
-                Left = 260,
-                Top = 100,
-                Width = 150,
-                Format = DateTimePickerFormat.Custom,
-                CustomFormat = "dd/MM/yyyy"
+                Dock = DockStyle.Fill,
+                BackColor = Color.White,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(10)
             };
-            _tabSchedule.Controls.Add(lblDate);
-            _tabSchedule.Controls.Add(_dtScheduleDate);
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 260f));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.Absolute, 56f));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            _tabSchedule.Controls.Add(root);
+
+            var topBar = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            root.Controls.Add(topBar, 0, 0);
+            root.SetColumnSpan(topBar, 2);
+
+            // ==== Thanh trên: Chọn tuần + Export + Back ====
+            var lblWeek = new Label
+            {
+                Left = 0,
+                Top = 18,
+                Width = 90,
+                Text = "Chọn tuần:"
+            };
+            topBar.Controls.Add(lblWeek);
+
+            // ComboBox chọn tuần (T2-CN)
+            var cbWeek = new ComboBox
+            {
+                Left = 95,
+                Top = 14,
+                Width = 320,
+                DropDownStyle = ComboBoxStyle.DropDownList
+            };
+            
+            // Tạo danh sách tuần: 4 tuần trước, tuần hiện tại, 8 tuần sau
+            var now = DateTime.Now + _serverTimeOffset;
+            var currentMonday = GetMondayOfWeek(now.Date);
+            
+            for (int i = -4; i <= 8; i++)
+            {
+                var monday = currentMonday.AddDays(i * 7);
+                var sunday = monday.AddDays(6);
+                var label = $"Tuần {monday:dd/MM} - {sunday:dd/MM/yyyy}";
+                cbWeek.Items.Add(new WeekItem { Monday = monday, Label = label });
+                
+                if (i == 0) // Tuần hiện tại
+                    cbWeek.SelectedIndex = cbWeek.Items.Count - 1;
+            }
+            
+            cbWeek.DisplayMember = "Label";
+            topBar.Controls.Add(cbWeek);
+            
+            // Lưu reference để dùng sau
+            _cbScheduleWeek = cbWeek;
 
             _btnExportSchedule = new Button
             {
                 Text = "Xuất file (PDF/Excel)",
                 Left = 430,
-                Top = 100,
+                Top = 14,
                 Width = 150
             };
-            _tabSchedule.Controls.Add(_btnExportSchedule);
+            topBar.Controls.Add(_btnExportSchedule);
 
             // Nút quay lại Trang chủ
             _btnBackHomeFromSchedule = new Button
             {
                 Text = "Về Trang chủ",
-                Left = 600,
-                Top = 100,
+                Left = 590,
+                Top = 14,
                 Width = 120
             };
             _btnBackHomeFromSchedule.Click += (s, e) =>
             {
                 _tabMain.SelectedTab = _tabHome;
             };
-            _tabSchedule.Controls.Add(_btnBackHomeFromSchedule);
+            // topBar.Controls.Add(_btnBackHomeFromSchedule);
 
-            // ==== Day View: timetable dạng list ====
-            _gridDayView = new DataGridView
+            var leftPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            root.Controls.Add(leftPanel, 0, 1);
+
+            _calSchedule = new MonthCalendar
             {
-                Left = 10,
-                Top = 140,
-                Width = 950,
-                Height = 250,
-                ReadOnly = true,
-                AllowUserToAddRows = false,
-                AllowUserToDeleteRows = false,
-                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false
+                MaxSelectionCount = 1
             };
-            _tabSchedule.Controls.Add(_gridDayView);
+            leftPanel.Controls.Add(_calSchedule);
 
-            // Cột: Ca, Giờ, Phòng, Môn/Lý do, Trạng thái
-            _gridDayView.Columns.Clear();
-            _gridDayView.Columns.Add("Slot", "Ca");
-            _gridDayView.Columns.Add("TimeRange", "Giờ");
-            _gridDayView.Columns.Add("RoomId", "Phòng");
-            _gridDayView.Columns.Add("Subject", "Môn / Lý do");
-            _gridDayView.Columns.Add("Status", "Trạng thái");
+            var rightPanel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            root.Controls.Add(rightPanel, 1, 1);
 
             // ==== Week View: 7 cột (T2–CN) x 14 dòng (ca1–14) ====
             _gridWeekView = new DataGridView
             {
-                Left = 10,
-                Top = 140,
-                Width = 950,
-                Height = 250,
+                Dock = DockStyle.Fill,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
@@ -1655,9 +2752,30 @@ namespace BookingClient
                 SelectionMode = DataGridViewSelectionMode.CellSelect,
                 MultiSelect = false,
                 RowHeadersVisible = true,   // hiển thị "Ca 1..14" ở row header
-                ShowCellToolTips = true
+                ShowCellToolTips = false,
+                BorderStyle = BorderStyle.None,
+                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                GridColor = Color.FromArgb(235, 235, 235),
+                BackgroundColor = Color.White,
+                EnableHeadersVisualStyles = false
             };
-            _tabSchedule.Controls.Add(_gridWeekView);
+            rightPanel.Controls.Add(_gridWeekView);
+
+            _gridWeekView.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
+            _gridWeekView.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(55, 65, 81);
+            _gridWeekView.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+            _gridWeekView.ColumnHeadersHeight = 48;
+            _gridWeekView.ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing;
+            _gridWeekView.DefaultCellStyle.Font = new Font("Segoe UI", 9.2f, FontStyle.Regular);
+            _gridWeekView.DefaultCellStyle.WrapMode = DataGridViewTriState.True;
+            _gridWeekView.DefaultCellStyle.SelectionBackColor = Color.FromArgb(229, 231, 235);
+            _gridWeekView.DefaultCellStyle.SelectionForeColor = Color.FromArgb(17, 24, 39);
+            _gridWeekView.RowTemplate.Height = 54;
+            _gridWeekView.RowHeadersWidth = 110;
+            _gridWeekView.RowHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9f, FontStyle.Bold);
+            _gridWeekView.RowHeadersDefaultCellStyle.ForeColor = Color.FromArgb(55, 65, 81);
+            _gridWeekView.RowHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
+            _gridWeekView.RowHeadersDefaultCellStyle.WrapMode = DataGridViewTriState.True;
 
             // Cột T2..CN (7 cột đúng yêu cầu)
             _gridWeekView.Columns.Clear();
@@ -1674,16 +2792,24 @@ namespace BookingClient
             for (int slot = 1; slot <= 14; slot++)
             {
                 int rowIndex = _gridWeekView.Rows.Add();
-                _gridWeekView.Rows[rowIndex].HeaderCell.Value = "Ca " + slot;
+                _gridWeekView.Rows[rowIndex].HeaderCell.Value = $"Ca {slot}\n{GetTimeRangeForSlot(slot)}";
             }
 
             // ==== Gắn event ====
-            _radDayView.CheckedChanged += (s, e) => UpdateScheduleViewMode();
-            _radWeekView.CheckedChanged += (s, e) => UpdateScheduleViewMode();
-
-            _dtScheduleDate.ValueChanged += (s, e) =>
+            cbWeek.SelectedIndexChanged += (s, e) =>
             {
+                if (_cbScheduleWeek?.SelectedItem is WeekItem wi)
+                {
+                    _calSchedule?.SetDate(wi.Monday);
+                }
                 ReloadScheduleForSelectedDate();
+            };
+
+            _calSchedule.DateChanged += (s, e) =>
+            {
+                if (_cbScheduleWeek == null) return;
+                var monday = GetMondayOfWeek(e.Start.Date);
+                EnsureAndSelectWeek(monday);
             };
 
             _btnExportSchedule.Click += (s, e) =>
@@ -1691,15 +2817,65 @@ namespace BookingClient
                 ExportCurrentSchedule();
             };
 
-            // Set ngày mặc định: hôm nay (có offset server nếu bạn đã tính _serverTimeOffset)
-            var now = DateTime.Now + _serverTimeOffset;
-            _dtScheduleDate.Value = now.Date;
+            // Hiển thị Week View
+            _gridWeekView.Visible = true;
 
-            // Mặc định hiển thị Day View
-            UpdateScheduleViewMode();
+            _gridWeekView.CellMouseEnter -= GridWeekView_CellMouseEnter;
+            _gridWeekView.CellMouseEnter += GridWeekView_CellMouseEnter;
+            _gridWeekView.CellMouseLeave -= GridWeekView_CellMouseLeave;
+            _gridWeekView.CellMouseLeave += GridWeekView_CellMouseLeave;
 
-            // TODO: sau này khi làm xong phần GET_MY_SCHEDULE thì ở đây sẽ load lịch thật
-            // ReloadScheduleForSelectedDate();
+            // KHÔNG load ngay khi build UI vì TCP chưa sẵn sàng
+            // Sẽ load khi user chọn tuần hoặc khi tab được activate
+        }
+
+        private void EnsureAndSelectWeek(DateTime monday)
+        {
+            if (_cbScheduleWeek == null) return;
+
+            for (int i = 0; i < _cbScheduleWeek.Items.Count; i++)
+            {
+                if (_cbScheduleWeek.Items[i] is WeekItem wi && wi.Monday.Date == monday.Date)
+                {
+                    _cbScheduleWeek.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            var sunday = monday.AddDays(6);
+            var label = $"Tuần {monday:dd/MM} - {sunday:dd/MM/yyyy}";
+            _cbScheduleWeek.Items.Add(new WeekItem { Monday = monday, Label = label });
+            _cbScheduleWeek.SelectedIndex = _cbScheduleWeek.Items.Count - 1;
+        }
+
+        private void GridWeekView_CellMouseEnter(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (sender is not DataGridView grid) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+
+            if (_scheduleTooltipRow == e.RowIndex && _scheduleTooltipCol == e.ColumnIndex)
+                return;
+
+            _scheduleTooltipRow = e.RowIndex;
+            _scheduleTooltipCol = e.ColumnIndex;
+
+            var text = grid.Rows[e.RowIndex].Cells[e.ColumnIndex].ToolTipText;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                _ttSchedule.Hide(grid);
+                return;
+            }
+
+            var rect = grid.GetCellDisplayRectangle(e.ColumnIndex, e.RowIndex, true);
+            _ttSchedule.Show(text, grid, rect.Left + 8, rect.Bottom + 8, 7000);
+        }
+
+        private void GridWeekView_CellMouseLeave(object? sender, DataGridViewCellEventArgs e)
+        {
+            if (sender is not DataGridView grid) return;
+            _scheduleTooltipRow = -1;
+            _scheduleTooltipCol = -1;
+            _ttSchedule.Hide(grid);
         }
         private void ReloadScheduleForSelectedDate()
         {
@@ -1707,23 +2883,6 @@ namespace BookingClient
             _ = ReloadScheduleFromServerAsync();
         }
 
-        // Chuyển giữa Day view / Week view
-        private void UpdateScheduleViewMode()
-        {
-            if (_radDayView == null || _gridDayView == null || _gridWeekView == null)
-                return;
-
-            if (_radDayView.Checked)
-            {
-                _gridDayView.Visible = true;
-                _gridWeekView.Visible = false;
-            }
-            else
-            {
-                _gridDayView.Visible = false;
-                _gridWeekView.Visible = true;
-            }
-        }
 
         // Tính thứ 2 của tuần chứa ngày d
         private DateTime GetMondayOfWeek(DateTime d)
@@ -1750,18 +2909,31 @@ namespace BookingClient
         // Load lại dữ liệu khi chọn ngày
         private async Task ReloadScheduleFromServerAsync()
         {
+            // Prevent concurrent reloads
+            if (_scheduleReloadInFlight)
+            {
+                AppendClientLog("[SCHEDULE] Reload already in progress, skipping...");
+                return;
+            }
+
             try
             {
-                var selectedDate = _dtScheduleDate.Value.Date;
-                var monday = GetMondayOfWeek(selectedDate);
+                _scheduleReloadInFlight = true;
+                
+                if (_cbScheduleWeek == null || _cbScheduleWeek.SelectedItem == null)
+                {
+                    AppendClientLog("[SCHEDULE] ComboBox chưa sẵn sàng");
+                    return;
+                }
+
+                var weekItem = (WeekItem)_cbScheduleWeek.SelectedItem;
+                var monday = weekItem.Monday;
                 var sunday = monday.AddDays(6);
-
-                // Gọi hàm đã có, tự mở TCP + parse
+                
+                AppendClientLog($"[SCHEDULE] Loading từ {monday:yyyy-MM-dd} đến {sunday:yyyy-MM-dd}");
                 var weekItems = await LoadMyScheduleFromServerAsync(monday, sunday);
-
-                // Đổ dữ liệu
-                FillDayView(selectedDate, weekItems);
-                FillWeekView(selectedDate, weekItems);
+                AppendClientLog($"[SCHEDULE] Nhận được {weekItems.Count} items từ server");
+                FillWeekView(monday, weekItems);
             }
             catch (Exception ex)
             {
@@ -1771,7 +2943,6 @@ namespace BookingClient
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
 
-                _gridDayView.Rows.Clear();
                 _gridWeekView.Rows.Clear();
 
                 for (int slot = 1; slot <= 14; slot++)
@@ -1779,6 +2950,10 @@ namespace BookingClient
                     int rowIndex = _gridWeekView.Rows.Add();
                     _gridWeekView.Rows[rowIndex].HeaderCell.Value = "Ca " + slot;
                 }
+            }
+            finally
+            {
+                _scheduleReloadInFlight = false;
             }
         }
 
@@ -1791,183 +2966,233 @@ namespace BookingClient
         //     return d.Date.AddDays(-diff);
         // }
 
-        // Gọi server lấy lịch của user trong khoảng ngày
+        // Lấy lịch từ _myBookings thay vì gọi server (tránh conflict stream)
         private async Task<List<MyScheduleItem>> LoadMyScheduleFromServerAsync(DateTime fromDate, DateTime toDate)
         {
             var result = new List<MyScheduleItem>();
 
             try
             {
-                // Không dùng TcpClient mới trong Mode A
-                if (_writer == null || _reader == null)
+                await Task.Delay(100); // Đợi một chút để UI update
+
+                AppendClientLog($"[SCHEDULE] Loading from _myBookings (count={_myBookings.Count}) and _myFixedSchedules (count={_myFixedSchedules.Count})");
+
+                // 1. Load từ _myBookings
+                foreach (var booking in _myBookings)
                 {
-                    AppendClientLog("[ERROR] TCP chưa sẵn sàng để load schedule.");
-                    return result;
-                }
+                    if (!DateTime.TryParse(booking.Date, out var bookingDate))
+                        continue;
 
-                var userId = _currentUser?.UserId ?? "";
-                if (string.IsNullOrWhiteSpace(userId))
-                    return result;
+                    if (bookingDate < fromDate || bookingDate > toDate)
+                        continue;
 
-                // ⭐ GỬI LỆNH QUA TCP ĐÃ MỞ
-                await _writer.WriteLineAsync(
-                    $"GET_MY_SCHEDULE|{userId}|{fromDate:yyyy-MM-dd}|{toDate:yyyy-MM-dd}");
-
-                bool started = false;
-                string? line;
-
-                // ⭐ ĐỌC DỮ LIỆU SERVER TRẢ VỀ
-                while ((line = await _reader.ReadLineAsync()) != null)
-                {
-                    line = line.Trim();
-                    if (line.Length == 0) continue;
-
-                    if (line == "MY_SCHEDULE_BEGIN")
+                    // Chỉ hiển thị APPROVED, IN_USE, COMPLETED, FIXED (bỏ QUEUED, CANCELLED, NO_SHOW)
+                    if (!string.Equals(booking.Status, "APPROVED", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(booking.Status, "IN_USE", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(booking.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(booking.Status, "FIXED", StringComparison.OrdinalIgnoreCase))
                     {
-                        started = true;
                         continue;
                     }
 
-                    if (line == "MY_SCHEDULE_END")
-                        break;
+                    // Fix: Hiển thị tất cả slots trong range booking
+                    int slotStart = ParseSlotIndexSafe(booking.SlotStartId);
+                    int slotEnd = ParseSlotIndexSafe(booking.SlotEndId);
+                    
+                    if (slotStart <= 0) continue;
+                    if (slotEnd <= 0) slotEnd = slotStart; // Single slot nếu SlotEndId không hợp lệ
 
-                    if (!started || !line.StartsWith("ITEM|"))
-                        continue;
-
-                    // ITEM|Date|RoomId|SlotStart|SlotEnd|TimeRange|Status|Purpose
-                    var p = line.Split('|');
-                    if (p.Length < 8) continue;
-
-                    // Parse
-                    if (!DateTime.TryParse(p[1], out var date))
-                        continue;
-
-                    int slotIndex = ParseSlotIndexSafe(p[3]); // SlotStartId
-                    if (slotIndex <= 0) continue;
-
-                    result.Add(new MyScheduleItem
+                    // Thêm tất cả slots từ start đến end
+                    for (int slotIndex = slotStart; slotIndex <= slotEnd; slotIndex++)
                     {
-                        Date = date.Date,
-                        Slot = slotIndex,
-                        RoomId = p[2],
-                        TimeRange = p[5],
-                        Status = p[6],
-                        Subject = p[7],
-                        Note = ""
-                    });
+                        result.Add(new MyScheduleItem
+                        {
+                            Date = bookingDate,
+                            Slot = slotIndex,
+                            RoomId = booking.RoomId,
+                            TimeRange = booking.TimeRange,
+                            Status = booking.Status,
+                            Subject = booking.Purpose,
+                            Note = ""
+                        });
+                    }
+
+                    AppendClientLog($"[SCHEDULE] Added from _myBookings: Date={bookingDate:yyyy-MM-dd}, Slots={slotStart}-{slotEnd}, Room={booking.RoomId}, Status={booking.Status}");
                 }
 
-                AppendClientLog("[INFO] Loaded schedule from server.");
+                // 2. Load từ _myFixedSchedules
+                foreach (var fixedSchedule in _myFixedSchedules)
+                {
+                    // Parse DateFrom và DateTo
+                    if (!DateTime.TryParse(fixedSchedule.DateFrom, out var dateFrom))
+                        continue;
+                    if (!DateTime.TryParse(fixedSchedule.DateTo, out var dateTo))
+                        continue;
+
+                    // Parse DayOfWeek
+                    if (!Enum.TryParse<DayOfWeek>(fixedSchedule.DayOfWeek, out var dow))
+                        continue;
+
+                    // Parse slot range
+                    int slotStart = ParseSlotIndexSafe(fixedSchedule.SlotStartId);
+                    int slotEnd = ParseSlotIndexSafe(fixedSchedule.SlotEndId);
+                    if (slotStart <= 0) continue;
+                    if (slotEnd <= 0) slotEnd = slotStart;
+
+                    // Tìm tất cả các ngày trong khoảng fromDate-toDate có DayOfWeek khớp
+                    for (var date = fromDate; date <= toDate; date = date.AddDays(1))
+                    {
+                        if (date.DayOfWeek == dow && date >= dateFrom && date <= dateTo)
+                        {
+                            // Thêm tất cả slots trong range
+                            for (int slotIndex = slotStart; slotIndex <= slotEnd; slotIndex++)
+                            {
+                                result.Add(new MyScheduleItem
+                                {
+                                    Date = date,
+                                    Slot = slotIndex,
+                                    RoomId = fixedSchedule.RoomId,
+                                    TimeRange = "", // Fixed schedule không có TimeRange
+                                    Status = "FIXED",
+                                    Subject = $"{fixedSchedule.SubjectCode} - {fixedSchedule.SubjectName}",
+                                    Note = fixedSchedule.Note
+                                });
+                            }
+
+                            AppendClientLog($"[SCHEDULE] Added from _myFixedSchedules: Date={date:yyyy-MM-dd}, Slots={slotStart}-{slotEnd}, Room={fixedSchedule.RoomId}, Subject={fixedSchedule.SubjectCode}");
+                        }
+                    }
+                }
+
+                AppendClientLog($"[SCHEDULE] Loaded {result.Count} items total.");
             }
             catch (Exception ex)
             {
                 AppendClientLog("[ERROR] LoadMyScheduleFromServerAsync: " + ex.Message);
-                // fallback: trả list rỗng
             }
 
             return result;
         }
 
 
-        // Đổ dữ liệu cho Day View
-        private void FillDayView(DateTime selectedDate, List<MyScheduleItem> weekItems)
-        {
-            _gridDayView.Rows.Clear();
-
-            foreach (var item in weekItems)
-            {
-                if (item.Date.Date != selectedDate)
-                    continue;
-
-                _gridDayView.Rows.Add(
-                    "Ca " + item.Slot,
-                    item.TimeRange,
-                    item.RoomId,
-                    item.Subject,
-                    item.Status
-                );
-            }
-        }
-
-        // Đổ dữ liệu cho Week View + tô màu + tooltip
         private void FillWeekView(DateTime selectedDate, List<MyScheduleItem> weekItems)
         {
-            var monday = GetMondayOfWeek(selectedDate);
-
-            // Xóa dữ liệu cũ nhưng giữ cấu trúc cột
-            _gridWeekView.Rows.Clear();
-            for (int slot = 1; slot <= 14; slot++)
+            if (InvokeRequired)
             {
-                int rowIndex = _gridWeekView.Rows.Add();
-                _gridWeekView.Rows[rowIndex].HeaderCell.Value = "Ca " + slot;
+                BeginInvoke(new Action(() => FillWeekView(selectedDate, weekItems)));
+                return;
             }
 
-            foreach (var item in weekItems)
+            try
             {
-                int dayOffset = (item.Date.Date - monday).Days;
-                if (dayOffset < 0 || dayOffset > 6)
-                    continue; // ngoài tuần
+                var monday = GetMondayOfWeek(selectedDate);
+                AppendClientLog($"[SCHEDULE] FillWeekView: monday={monday:yyyy-MM-dd}, items={weekItems.Count}");
+                
+                // Suspend layout để tránh lỗi auto-filled column resizing
+                _gridWeekView.SuspendLayout();
+                _gridWeekView.Rows.Clear();
 
-                int rowIndex = item.Slot - 1;
-                if (rowIndex < 0 || rowIndex >= _gridWeekView.Rows.Count)
-                    continue;
-
-                var cell = _gridWeekView.Rows[rowIndex].Cells[dayOffset];
-
-                // Nội dung ô: Phòng + môn
-                cell.Value = $"{item.RoomId} - {item.Subject}";
-
-                // Tooltip: phòng, ghi chú, trạng thái
-                cell.ToolTipText =
-                    $"Phòng: {item.RoomId}\n" +
-                    $"Môn/Lý do: {item.Subject}\n" +
-                    $"Trạng thái: {item.Status}\n" +
-                    $"Ghi chú: {item.Note}";
-
-                // Tô màu theo trạng thái
-                if (string.Equals(item.Status, "APPROVED", StringComparison.OrdinalIgnoreCase))
+                if (_gridWeekView.Columns.Count >= 7)
                 {
-                    cell.Style.BackColor = Color.Khaki; // vàng
+                    _gridWeekView.Columns[0].HeaderText = $"T2\n{monday:dd/MM}";
+                    _gridWeekView.Columns[1].HeaderText = $"T3\n{monday.AddDays(1):dd/MM}";
+                    _gridWeekView.Columns[2].HeaderText = $"T4\n{monday.AddDays(2):dd/MM}";
+                    _gridWeekView.Columns[3].HeaderText = $"T5\n{monday.AddDays(3):dd/MM}";
+                    _gridWeekView.Columns[4].HeaderText = $"T6\n{monday.AddDays(4):dd/MM}";
+                    _gridWeekView.Columns[5].HeaderText = $"T7\n{monday.AddDays(5):dd/MM}";
+                    _gridWeekView.Columns[6].HeaderText = $"CN\n{monday.AddDays(6):dd/MM}";
                 }
-                else if (string.Equals(item.Status, "IN_USE", StringComparison.OrdinalIgnoreCase))
+                
+                for (int slot = 1; slot <= 14; slot++)
                 {
-                    cell.Style.BackColor = Color.LightGreen; // xanh
+                    int rowIndex = _gridWeekView.Rows.Add();
+                    _gridWeekView.Rows[rowIndex].HeaderCell.Value = $"Ca {slot}\n{GetTimeRangeForSlot(slot)}";
                 }
-                else if (string.Equals(item.Status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+
+                foreach (DataGridViewRow r in _gridWeekView.Rows)
                 {
-                    cell.Style.BackColor = Color.LightGray; // xám
+                    foreach (DataGridViewCell c in r.Cells)
+                    {
+                        c.Value = null;
+                        c.ToolTipText = string.Empty;
+                        c.Style.BackColor = Color.White;
+                        c.Style.ForeColor = Color.FromArgb(17, 24, 39);
+                    }
                 }
-                else if (string.Equals(item.Status, "NO_SHOW", StringComparison.OrdinalIgnoreCase))
+                
+                foreach (var item in weekItems)
                 {
-                    cell.Style.BackColor = Color.LightCoral; // đỏ nhạt
+                    int dayOffset = (item.Date.Date - monday).Days;
+                    AppendClientLog($"[SCHEDULE] Item: Date={item.Date:yyyy-MM-dd}, Slot={item.Slot}, Room={item.RoomId}, dayOffset={dayOffset}");
+                    
+                    if (dayOffset < 0 || dayOffset > 6)
+                    {
+                        AppendClientLog($"[SCHEDULE] Skip: dayOffset out of range");
+                        continue;
+                    }
+                    
+                    // Kiểm tra columns count
+                    if (dayOffset >= _gridWeekView.Columns.Count)
+                    {
+                        AppendClientLog($"[SCHEDULE] Skip: dayOffset >= columns count ({dayOffset} >= {_gridWeekView.Columns.Count})");
+                        continue;
+                    }
+                    
+                    int rowIndex = item.Slot - 1;
+                    if (rowIndex < 0 || rowIndex >= _gridWeekView.Rows.Count)
+                    {
+                        AppendClientLog($"[SCHEDULE] Skip: rowIndex out of range ({rowIndex})");
+                        continue;
+                    }
+                    
+                    var cell = _gridWeekView.Rows[rowIndex].Cells[dayOffset];
+                    cell.Value = $"{item.RoomId}\n{item.Subject}";
+                    cell.ToolTipText =
+                        $"Phòng: {item.RoomId}\n" +
+                        $"Môn/Lý do: {item.Subject}\n" +
+                        $"Trạng thái: {item.Status}\n" +
+                        $"Ghi chú: {item.Note}";
+                    
+                    var st = (item.Status ?? string.Empty).Trim().ToUpperInvariant();
+                    var badge = GetStatusBadgeColors(st);
+                    cell.Style.BackColor = badge.bg;
+                    cell.Style.ForeColor = Color.FromArgb(17, 24, 39);
+                    cell.Style.Alignment = DataGridViewContentAlignment.TopLeft;
+                    cell.Style.Padding = new Padding(6, 6, 6, 6);
                 }
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog($"[ERROR] FillWeekView: {ex.Message}");
+            }
+            finally
+            {
+                _gridWeekView.ResumeLayout();
             }
         }
-        // Export theo mode đang chọn
+        // Export Week View
         private void ExportCurrentSchedule()
         {
+            if (_cbScheduleWeek == null || _cbScheduleWeek.SelectedItem == null)
+                return;
+
+            var weekItem = (WeekItem)_cbScheduleWeek.SelectedItem;
+            var monday = weekItem.Monday;
+
             using (var dlg = new SaveFileDialog())
             {
                 dlg.Title = "Export my schedule";
-                dlg.Filter = "Excel CSV (*.csv)|*.csv|PDF (text only) (*.pdf)|*.pdf";
-                dlg.FileName = $"{_currentUser.UserId}_Schedule_{_dtScheduleDate.Value:yyyyMMdd}";
+                dlg.Filter = "Excel CSV (*.csv)|*.csv";
+                dlg.FileName = $"{_currentUser.UserId}_Schedule_Week_{monday:yyyyMMdd}";
 
                 if (dlg.ShowDialog() != DialogResult.OK)
                     return;
 
                 var filePath = dlg.FileName;
-                var ext = Path.GetExtension(filePath).ToLowerInvariant();
 
                 try
                 {
-                    if (_radDayView.Checked)
-                    {
-                        ExportDayScheduleToFile(filePath);
-                    }
-                    else
-                    {
-                        ExportWeekScheduleToFile(filePath);
-                    }
+                    ExportWeekScheduleToFile(filePath);
 
                     MessageBox.Show("Export lịch thành công.", "Export",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -1979,39 +3204,24 @@ namespace BookingClient
                 }
             }
         }
-        private void ExportDayScheduleToFile(string filePath)
-        {
-            using (var writer = new StreamWriter(filePath, false, Encoding.UTF8))
-            {
-                // Header
-                writer.WriteLine("Ca,Giờ,Phòng,Môn/Lý do,Trạng thái");
-
-                foreach (DataGridViewRow row in _gridDayView.Rows)
-                {
-                    if (row.IsNewRow) continue;
-
-                    var ca = row.Cells["Slot"].Value?.ToString() ?? "";
-                    var time = row.Cells["TimeRange"].Value?.ToString() ?? "";
-                    var room = row.Cells["RoomId"].Value?.ToString() ?? "";
-                    var subject = row.Cells["Subject"].Value?.ToString() ?? "";
-                    var status = row.Cells["Status"].Value?.ToString() ?? "";
-
-                    // CSV đơn giản, nếu muốn có thể escape dấu phẩy
-                    writer.WriteLine($"{ca},{time},{room},{subject},{status}");
-                }
-            }
-        }
 
         // Export Week View (chỉ CSV để Excel mở dạng bảng T2..CN x Ca)
         private void ExportWeekScheduleToFile(string filePath)
         {
+            if (InvokeRequired)
+            {
+                Invoke(new Action(() => ExportWeekScheduleToFile(filePath)));
+                return;
+            }
+
             using (var writer = new StreamWriter(filePath, false, Encoding.UTF8))
             {
                 // Header: Ca,T2,T3,...,CN
                 writer.WriteLine("Ca,T2,T3,T4,T5,T6,T7,CN");
 
-                foreach (DataGridViewRow row in _gridWeekView.Rows)
+                for (int rowIdx = 0; rowIdx < _gridWeekView.Rows.Count; rowIdx++)
                 {
+                    var row = _gridWeekView.Rows[rowIdx];
                     if (row.IsNewRow) continue;
 
                     var ca = row.HeaderCell.Value?.ToString() ?? "";
@@ -2030,6 +3240,8 @@ namespace BookingClient
             }
         }
 
+
+
         // ================== 2.6. TAB THÔNG BÁO ==================
         private void BuildNotificationsTabUi()
         {
@@ -2041,6 +3253,7 @@ namespace BookingClient
                 Width = 150,
                 DropDownStyle = ComboBoxStyle.DropDownList
             };
+            
             _cbFilterType.Items.AddRange(new object[]
             {
                 "Tất cả", "Grant", "ChangeRoom", "NoShow", "Reminder"
@@ -2099,145 +3312,183 @@ namespace BookingClient
         // ================== 2.7. TAB TÀI KHOẢN ==================
         private void BuildAccountTabUi()
         {
-            // ===== Thông tin tài khoản =====
-            var lblName = new Label { Left = 10, Top = 105, Width = 100, Text = "Họ tên:" };
-            _txtAccFullName = new TextBox { Left = 120, Top = 105, Width = 300, ReadOnly = true };
+            _tabAccount.Controls.Clear();
+            _tabAccount.BackColor = Color.White;
 
-            var lblId = new Label { Left = 10, Top = 135, Width = 100, Text = "MSSV/Mã GV:" };
-            _txtAccStudentLecturerId = new TextBox { Left = 120, Top = 135, Width = 300, ReadOnly = true };
-
-            var lblClassFac = new Label { Left = 10, Top = 165, Width = 100, Text = "Lớp / Khoa:" };
-            _txtAccClassFaculty = new TextBox { Left = 120, Top = 165, Width = 300, ReadOnly = true };
-
-            var lblDept = new Label { Left = 10, Top = 195, Width = 100, Text = "Bộ môn / Khoa:" };
-            _txtAccDepartment = new TextBox { Left = 120, Top = 195, Width = 300, ReadOnly = true };
-
-            var lblEmail = new Label { Left = 10, Top = 225, Width = 100, Text = "Email:" };
-            _txtAccEmail = new TextBox { Left = 120, Top = 225, Width = 300 };
-
-            var lblPhone = new Label { Left = 10, Top = 255, Width = 100, Text = "Phone:" };
-            _txtAccPhone = new TextBox { Left = 120, Top = 255, Width = 300 };
-
-            _btnUpdateContact = new Button
+            var root = new TableLayoutPanel
             {
-                Text = "Lưu liên hệ",
-                Left = 120,
-                Top = 285,
-                Width = 120
+                Dock = DockStyle.Fill,
+                BackColor = Color.White,
+                ColumnCount = 2,
+                RowCount = 1,
+                Padding = new Padding(12)
             };
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 340f));
+            root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            _tabAccount.Controls.Add(root);
 
-            // ===== Nhóm đổi mật khẩu =====
-            var lblOldPwd = new Label { Left = 10, Top = 315, Width = 100, Text = "Mật khẩu cũ:" };
-            _txtOldPassword = new TextBox
+            var left = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            var right = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            root.Controls.Add(left, 0, 0);
+            root.Controls.Add(right, 1, 0);
+
+            var profileCard = new Panel
             {
-                Left = 120,
-                Top = 315,
-                Width = 300,
-                UseSystemPasswordChar = true
+                Dock = DockStyle.Top,
+                Height = 320,
+                BackColor = Color.White,
+                Padding = new Padding(14),
+                BorderStyle = BorderStyle.FixedSingle
             };
+            left.Controls.Add(profileCard);
 
-            var lblNewPwd = new Label { Left = 10, Top = 345, Width = 100, Text = "Mật khẩu mới:" };
-            _txtNewPassword = new TextBox
+            var avatar = new Panel
             {
-                Left = 120,
-                Top = 345,
-                Width = 300,
-                UseSystemPasswordChar = true
+                Left = 14,
+                Top = 14,
+                Width = 72,
+                Height = 72,
+                BackColor = Color.FromArgb(37, 99, 235)
             };
+            profileCard.Controls.Add(avatar);
 
-            var lblConfirmPwd = new Label { Left = 10, Top = 375, Width = 100, Text = "Nhập lại:" };
-            _txtConfirmPassword = new TextBox
+            var lblAvatar = new Label
             {
-                Left = 120,
-                Top = 375,
-                Width = 300,
-                UseSystemPasswordChar = true
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI", 18f, FontStyle.Bold),
+                ForeColor = Color.White
             };
+            avatar.Controls.Add(lblAvatar);
 
-            _btnChangePassword = new Button
+            var lblNameTitle = new Label
             {
-                Text = "Đổi mật khẩu",
-                Left = 120,
-                Top = 405,
-                Width = 120
+                Left = avatar.Right + 12,
+                Top = 18,
+                Width = 220,
+                Height = 28,
+                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+                ForeColor = Color.FromArgb(17, 24, 39)
             };
+            profileCard.Controls.Add(lblNameTitle);
 
-            // ===== Check connect trong tab Account =====
+            var lblSub = new Label
+            {
+                Left = avatar.Right + 12,
+                Top = 46,
+                Width = 220,
+                Height = 20,
+                Font = new Font("Segoe UI", 9f, FontStyle.Regular),
+                ForeColor = Color.FromArgb(107, 114, 128)
+            };
+            profileCard.Controls.Add(lblSub);
+
+            var y = 102;
+            int labelW = 110;
+            int fieldW = 180;
+
+            var lblId = new Label { Left = 14, Top = y, Width = labelW, Text = "MSSV/Mã GV:" };
+            _txtAccStudentLecturerId = new TextBox { Left = 14 + labelW, Top = y - 3, Width = fieldW, ReadOnly = true };
+            profileCard.Controls.Add(lblId);
+            profileCard.Controls.Add(_txtAccStudentLecturerId);
+
+            y += 34;
+            var lblClassFac = new Label { Left = 14, Top = y, Width = labelW, Text = "Lớp / Khoa:" };
+            _txtAccClassFaculty = new TextBox { Left = 14 + labelW, Top = y - 3, Width = fieldW, ReadOnly = true };
+            profileCard.Controls.Add(lblClassFac);
+            profileCard.Controls.Add(_txtAccClassFaculty);
+
+            y += 34;
+            var lblDept = new Label { Left = 14, Top = y, Width = labelW, Text = "Bộ môn / Khoa:" };
+            _txtAccDepartment = new TextBox { Left = 14 + labelW, Top = y - 3, Width = fieldW, ReadOnly = true };
+            profileCard.Controls.Add(lblDept);
+            profileCard.Controls.Add(_txtAccDepartment);
+
+            y += 44;
             _btnAccCheckConnect = new Button
             {
                 Text = "Check connect",
-                Left = 500,
-                Top = 105,
-                Width = 120
+                Left = 14,
+                Top = y,
+                Width = 120,
+                Height = 30
             };
+            profileCard.Controls.Add(_btnAccCheckConnect);
 
             _pnlAccConnectDot = new Panel
             {
-                Left = 630,
-                Top = 110,
+                Left = _btnAccCheckConnect.Right + 10,
+                Top = y + 8,
                 Width = 14,
                 Height = 14,
                 BackColor = Color.Red,
                 BorderStyle = BorderStyle.FixedSingle
             };
+            profileCard.Controls.Add(_pnlAccConnectDot);
 
             _lblAccConnectText = new Label
             {
-                Left = 650,
-                Top = 108,
-                Width = 80,
+                Left = _pnlAccConnectDot.Right + 6,
+                Top = y + 6,
+                Width = 120,
+                Height = 18,
                 Text = "Lost",
                 ForeColor = Color.Red
             };
+            profileCard.Controls.Add(_lblAccConnectText);
 
-            // ===== Nút Logout =====
-            _btnLogout = new Button
+            var grpContact = new GroupBox
             {
-                Text = "Đăng xuất",
-                Left = 800,
-                Top = 105,
-                Width = 120
+                Text = "Liên hệ",
+                Dock = DockStyle.Top,
+                Height = 170,
+                Padding = new Padding(12)
             };
-            _btnLogout.Click += (s, e) =>
-            {
-                // TODO: tùy bạn, tạm thời đóng form
-                Close();
-            };
+            right.Controls.Add(grpContact);
 
-            // ===== Nút TRỞ VỀ TRANG CHỦ (nút Back riêng) =====
-            var btnBackToHome = new Button
-            {
-                Text = "Trở về trang chủ",
-                Left = 800,
-                Top = 145,
-                Width = 120
-            };
-            btnBackToHome.Click += (s, e) =>
-            {
-                _tabMain.SelectedTab = _tabHome;
-            };
+            var lblEmail = new Label { Left = 14, Top = 34, Width = 90, Text = "Email:" };
+            _txtAccEmail = new TextBox { Left = 110, Top = 30, Width = 360 };
+            var lblPhone = new Label { Left = 14, Top = 70, Width = 90, Text = "Phone:" };
+            _txtAccPhone = new TextBox { Left = 110, Top = 66, Width = 360 };
+            _btnUpdateContact = new Button { Text = "Lưu liên hệ", Left = 110, Top = 106, Width = 120, Height = 30 };
+            grpContact.Controls.Add(lblEmail);
+            grpContact.Controls.Add(_txtAccEmail);
+            grpContact.Controls.Add(lblPhone);
+            grpContact.Controls.Add(_txtAccPhone);
+            grpContact.Controls.Add(_btnUpdateContact);
 
-            // Add control vào tab
-            _tabAccount.Controls.AddRange(new Control[]
+            var grpPwd = new GroupBox
             {
-        lblName, _txtAccFullName,
-        lblId, _txtAccStudentLecturerId,
-        lblClassFac, _txtAccClassFaculty,
-        lblDept, _txtAccDepartment,
-        lblEmail, _txtAccEmail,
-        lblPhone, _txtAccPhone,
-        _btnUpdateContact,
-        lblOldPwd, _txtOldPassword,
-        lblNewPwd, _txtNewPassword,
-        lblConfirmPwd, _txtConfirmPassword,
-        _btnChangePassword,
-        // _btnAccCheckConnect, _pnlAccConnectDot, _lblAccConnectText,
-        // _btnLogout,
-        btnBackToHome          // dùng biến local, không đụng tới _btnBackToHome ở tab khác
-            });
+                Text = "Đổi mật khẩu",
+                Dock = DockStyle.Top,
+                Height = 220,
+                Padding = new Padding(12)
+            };
+            right.Controls.Add(grpPwd);
+
+            var lblOldPwd = new Label { Left = 14, Top = 34, Width = 90, Text = "Mật khẩu cũ:" };
+            _txtOldPassword = new TextBox { Left = 110, Top = 30, Width = 360, UseSystemPasswordChar = true };
+            var lblNewPwd = new Label { Left = 14, Top = 70, Width = 90, Text = "Mật khẩu mới:" };
+            _txtNewPassword = new TextBox { Left = 110, Top = 66, Width = 360, UseSystemPasswordChar = true };
+            var lblConfirmPwd = new Label { Left = 14, Top = 106, Width = 90, Text = "Nhập lại:" };
+            _txtConfirmPassword = new TextBox { Left = 110, Top = 102, Width = 360, UseSystemPasswordChar = true };
+            _btnChangePassword = new Button { Text = "Đổi mật khẩu", Left = 110, Top = 146, Width = 120, Height = 30 };
+            grpPwd.Controls.Add(lblOldPwd);
+            grpPwd.Controls.Add(_txtOldPassword);
+            grpPwd.Controls.Add(lblNewPwd);
+            grpPwd.Controls.Add(_txtNewPassword);
+            grpPwd.Controls.Add(lblConfirmPwd);
+            grpPwd.Controls.Add(_txtConfirmPassword);
+            grpPwd.Controls.Add(_btnChangePassword);
+
+            _txtAccFullName = new TextBox { Visible = false, ReadOnly = true };
+            _tabAccount.Controls.Add(_txtAccFullName);
 
             // ===== Fill info từ _currentUser =====
             _txtAccFullName.Text = _currentUser.FullName;
+            lblAvatar.Text = GetInitials(_currentUser.FullName);
+            lblNameTitle.Text = _currentUser.FullName;
+            lblSub.Text = _currentUser.UserType;
             _txtAccEmail.Text = _currentUser.Email ?? "";
             _txtAccPhone.Text = _currentUser.Phone ?? "";
 
@@ -2275,6 +3526,17 @@ namespace BookingClient
             {
                 await ChangePasswordAsync();
             };
+        }
+
+        private string GetInitials(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "?";
+            var parts = name.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return "?";
+            if (parts.Length == 1) return parts[0].Substring(0, 1).ToUpperInvariant();
+            var a = parts[0].Substring(0, 1);
+            var b = parts[parts.Length - 1].Substring(0, 1);
+            return (a + b).ToUpperInvariant();
         }
 
         private void RefreshHeaderSubInfo()
@@ -2482,6 +3744,12 @@ namespace BookingClient
             if (string.IsNullOrEmpty(roomId))
                 return;
 
+            if (IsRoomDisabled(roomId))
+                return;
+
+            if (_cbReqRoom == null)
+                return;
+
             // Chọn phòng tương ứng
             if (_cbReqRoom.Items.Contains(roomId))
                 _cbReqRoom.SelectedItem = roomId;
@@ -2502,10 +3770,61 @@ namespace BookingClient
             UpdateSlotTimeLabel();
             AppendClientLog($"Prefill request from room {roomId}.");
         }
+        private void ForceReloadAllUI()
+        {
+            try
+            {
+                AppendClientLog("[INFO] Force reload all UI after fixed schedule update");
+                
+                // Reload tất cả components ngay lập tức
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // 1. Reload home
+                        await LoadHomeFromServerAsync();
+                        
+                        // 2. Reload schedule nếu đang ở tab schedule
+                        if (_tabMain?.SelectedTab == _tabSchedule)
+                        {
+                            await ReloadScheduleFromServerAsync();
+                        }
+                        
+                        // 3. Reload room slots nếu đang ở tab booking và đã chọn room
+                        if (_tabMain?.SelectedTab == _tabBooking && _gridRooms?.CurrentRow != null)
+                        {
+                            // Force reload bằng cách reset flag
+                            _roomSlotsRequestInFlight = false;
+                            await ReloadSlotsForSelectedRoomAsync();
+                        }
+                        
+                        AppendClientLog("[INFO] Force reload completed");
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendClientLog($"[ERROR] ForceReloadAllUI: {ex.Message}");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                AppendClientLog($"[ERROR] ForceReloadAllUI outer: {ex.Message}");
+            }
+        }
+
         private void AppendClientLog(string message)
         {
             if (_txtClientLog == null) return;
-            _txtClientLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+            if (_txtClientLog.InvokeRequired)
+            {
+                _txtClientLog.Invoke(new Action(() => {
+                    _txtClientLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+                }));
+            }
+            else
+            {
+                _txtClientLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+            }
         }
 
         private void ApplySlotConfig()
@@ -2566,7 +3885,8 @@ namespace BookingClient
                     return;
                 }
 
-                string msg = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotId}";
+                var date = _dtReqDate.Value.Date;
+                string msg = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotId}|{date:yyyy-MM-dd}|{purpose}";
                 AppendClientLog("[SEND] " + msg);
 
                 await _writer.WriteLineAsync(msg);
@@ -2627,7 +3947,7 @@ namespace BookingClient
                 }
 
                 // ⭐ Gửi request
-                string msg = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                string msg = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{date:yyyy-MM-dd}|{purpose}";
                 AppendClientLog("[SEND] " + msg);
                 await _writer.WriteLineAsync(msg);
                 _lblRequestStatus.ForeColor = Color.Blue;
@@ -2653,7 +3973,7 @@ namespace BookingClient
                 var p = line.Split('|');
                 if (p.Length >= 6)
                 {
-                    _gridTodaySchedule.Rows.Add(
+                    int rowIdx = _gridTodaySchedule.Rows.Add(
                         p[1], // time range
                         p[2], // room
                         p[3], // subject
@@ -2661,12 +3981,80 @@ namespace BookingClient
                         p[5], // status
                         p.Length > 6 ? p[6] : ""
                     );
+                    // Color code by status
+                    var status = p[5].Trim().ToUpperInvariant();
+                    var row = _gridTodaySchedule.Rows[rowIdx];
+                    if (status == "FIXED")
+                    {
+                        row.DefaultCellStyle.BackColor = Color.LightGoldenrodYellow;
+                        row.DefaultCellStyle.Font = new Font(_gridTodaySchedule.Font, FontStyle.Bold);
+                        row.DefaultCellStyle.ForeColor = Color.DarkOrange;
+                    }
+                    else if (status == "APPROVED")
+                    {
+                        row.DefaultCellStyle.BackColor = Color.LightGreen;
+                        row.DefaultCellStyle.Font = _gridTodaySchedule.Font;
+                        row.DefaultCellStyle.ForeColor = Color.DarkGreen;
+                    }
+                    else if (status == "IN_USE")
+                    {
+                        row.DefaultCellStyle.BackColor = Color.LightSkyBlue;
+                        row.DefaultCellStyle.Font = _gridTodaySchedule.Font;
+                        row.DefaultCellStyle.ForeColor = Color.MidnightBlue;
+                    }
+                    else if (status == "COMPLETED")
+                    {
+                        row.DefaultCellStyle.BackColor = Color.Gainsboro;
+                        row.DefaultCellStyle.Font = _gridTodaySchedule.Font;
+                        row.DefaultCellStyle.ForeColor = Color.Gray;
+                    }
+                    else if (status == "NO_SHOW")
+                    {
+                        row.DefaultCellStyle.BackColor = Color.MistyRose;
+                        row.DefaultCellStyle.Font = _gridTodaySchedule.Font;
+                        row.DefaultCellStyle.ForeColor = Color.Red;
+                    }
+                    else
+                    {
+                        row.DefaultCellStyle.BackColor = Color.White;
+                        row.DefaultCellStyle.Font = _gridTodaySchedule.Font;
+                        row.DefaultCellStyle.ForeColor = Color.Black;
+                    }
                 }
             }
 
-            // ---- Render Notifications ----
-            foreach (var msg in _homeNotificationLines)
-                _lstLatestNotifications.Items.Add(msg);
+            foreach (var n in _homeNotificationLines)
+            {
+                if (!string.IsNullOrWhiteSpace(n))
+                    _lstLatestNotifications.Items.Add(n);
+            }
+            // Render thêm fixed schedule cho hôm nay (nếu chưa có trong bookings)
+            var today = DateTime.Now.Date;
+            foreach (var fs in _myFixedSchedules)
+            {
+                if (DateTime.TryParse(fs.DateFrom, out var from) && DateTime.TryParse(fs.DateTo, out var to))
+                {
+                    if (today < from || today > to) continue;
+                    var dow = today.DayOfWeek.ToString();
+                    if (!string.Equals(dow, fs.DayOfWeek, StringComparison.OrdinalIgnoreCase)) continue;
+                    // Kiểm tra đã có booking trùng slot/phòng chưa
+                    bool hasBooking = _homeScheduleLines.Any(l =>
+                        l.Contains(fs.RoomId) && l.Contains(fs.SlotStartId) && l.Contains(fs.SlotEndId));
+                    if (hasBooking) continue;
+                    int rowIdx = _gridTodaySchedule.Rows.Add(
+                        $"{fs.SlotStartId}-{fs.SlotEndId}",
+                        fs.RoomId,
+                        fs.SubjectName,
+                        fs.LecturerUserId,
+                        "FIXED",
+                        fs.Note
+                    );
+                    var row = _gridTodaySchedule.Rows[rowIdx];
+                    row.DefaultCellStyle.BackColor = Color.LightGoldenrodYellow;
+                    row.DefaultCellStyle.Font = new Font(_gridTodaySchedule.Font, FontStyle.Bold);
+                    row.DefaultCellStyle.ForeColor = Color.DarkOrange;
+                }
+            }
         }
 
         private async void ReleaseSingleSlot()
@@ -2687,7 +4075,7 @@ namespace BookingClient
                 return;
             }
 
-            string msg = $"RELEASE|{_currentUser.UserId}|{roomId}|{slot}";
+            string msg = $"RELEASE|{_currentUser.UserId}|{roomId}|{slot}|{date:yyyy-MM-dd}";
             AppendClientLog("[SEND] " + msg);
             await _writer.WriteLineAsync(msg);
 
@@ -2739,7 +4127,7 @@ namespace BookingClient
                 }
 
                 // ⭐ Gửi lệnh RELEASE_RANGE
-                var msg = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                var msg = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{date:yyyy-MM-dd}";
                 AppendClientLog("[SEND] " + msg);
                 await _writer.WriteLineAsync(msg);
 
@@ -2809,6 +4197,9 @@ namespace BookingClient
         }
 
         private void HandleServerMessage(string line)
+
+
+
         {
             try
             {
@@ -2822,8 +4213,247 @@ namespace BookingClient
                     {
                         _ = Task.Run(async () =>
                         {
-                            try { await LoadHomeFromServerAsync(); }
+                            try 
+                            { 
+                                await LoadHomeFromServerAsync();
+                                // Reload schedule tab nếu đang hiển thị
+                                if (_tabMain != null && _tabSchedule != null && _tabMain.SelectedTab == _tabSchedule)
+                                {
+                                    await ReloadScheduleFromServerAsync();
+                                }
+                            }
                             catch (Exception ex) { AppendClientLog("[ERROR] LoadHomeFromServerAsync: " + ex.Message); }
+                        });
+                    }
+                    return;
+                }
+                // ====== PUSH: MY FIXED SCHEDULE ======
+                if (line.StartsWith("{\"type\":\"PUSH_MY_FIXED_SCHEDULE\""))
+                {
+                    try
+                    {
+                        var obj = System.Text.Json.JsonDocument.Parse(line);
+                        var root = obj.RootElement;
+                        if (root.TryGetProperty("data", out var arr) && arr.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            var list = new List<FixedScheduleRow>();
+                            foreach (var el in arr.EnumerateArray())
+                            {
+                                var row = new FixedScheduleRow
+                                {
+                                    SessionId = el.GetProperty("sessionId").GetGuid(),
+                                    SubjectCode = el.GetProperty("subjectCode").GetString() ?? "",
+                                    SubjectName = el.GetProperty("subjectName").GetString() ?? "",
+                                    Class = el.GetProperty("class").GetString() ?? "",
+                                    LecturerUserId = el.GetProperty("lecturerUserId").GetString() ?? "",
+                                    RoomId = el.GetProperty("roomId").GetString() ?? "",
+                                    DayOfWeek = el.GetProperty("dayOfWeek").GetString() ?? "",
+                                    SlotStartId = el.GetProperty("slotStartId").GetString() ?? "",
+                                    SlotEndId = el.GetProperty("slotEndId").GetString() ?? "",
+                                    DateFrom = el.GetProperty("dateFrom").GetString() ?? "",
+                                    DateTo = el.GetProperty("dateTo").GetString() ?? "",
+                                    Note = el.GetProperty("note").GetString() ?? ""
+                                };
+                                list.Add(row);
+                            }
+                            _myFixedSchedules = list;
+                            AppendClientLog($"[INFO] Đã nhận fixed schedule: {list.Count} mục");
+                            
+                            // Force reload tất cả UI ngay lập tức - không dùng Task.Run để tránh delay
+                            if (InvokeRequired)
+                            {
+                                Invoke(new Action(() => ForceReloadAllUI()));
+                            }
+                            else
+                            {
+                                ForceReloadAllUI();
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppendClientLog("[ERROR] Parse PUSH_MY_FIXED_SCHEDULE: " + ex.Message);
+                    }
+                    return;
+                }
+                /////////////////////////////////////////////
+                // ====== PUSH: BOOKING EVENT NOTIFICATIONS ======
+                // Booking granted (event payload)
+                if (line.StartsWith("GRANTED|") || line.StartsWith("GRANTED_FROM_QUEUE|") || line.StartsWith("GRANTED_RANGE|"))
+                {
+                    // Format:
+                    // - GRANTED|BookingId|RoomId|SlotStartId|SlotEndId
+                    // - GRANTED_FROM_QUEUE|BookingId|RoomId|SlotStartId|SlotEndId
+                    // - GRANTED_RANGE|BookingId|RoomId|SlotStartId|SlotEndId
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        var kind = p[0];
+                        var roomId = p[2];
+                        var slotRange = p[3] == p[4] ? p[3] : $"{p[3]}-{p[4]}";
+
+                        string header = kind switch
+                        {
+                            "GRANTED_FROM_QUEUE" => "🎉 Booking của bạn đã được GRANT từ hàng chờ",
+                            "GRANTED_RANGE" => "🎉 RANGE booking của bạn đã được GRANT",
+                            _ => "🎉 Booking của bạn đã được GRANT"
+                        };
+
+                        if (_lstLatestNotifications != null && !_lstLatestNotifications.IsDisposed)
+                            _lstLatestNotifications.Items.Insert(0, $"{header}: {roomId} slots {slotRange}");
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await LoadHomeFromServerAsync();
+                                await ReloadMyBookingsAsync();
+                            }
+                            catch (Exception ex) { AppendClientLog($"[ERROR] Reload after {kind}: " + ex.Message); }
+                        });
+                    }
+                    return;
+                }
+                // Grant notification
+                if (line.StartsWith("NOTIFY_GRANT|"))
+                {
+                    // Format: NOTIFY_GRANT|RoomId|Slot|Date|Deadline
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        string msg = $"Phòng {p[1]} ca {p[2]} ngày {p[3]} đã được grant. Vui lòng check-in trước {p[4]}.";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+                // Check-in notification
+                if (line.StartsWith("NOTIFY_CHECKIN|"))
+                {
+                    // Format: NOTIFY_CHECKIN|RoomId|Slot|Date|Time
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        string msg = $"Bạn đã check-in phòng {p[1]} ca {p[2]} ngày {p[3]} lúc {p[4]}.";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+                // Complete notification
+                if (line.StartsWith("NOTIFY_COMPLETE|"))
+                {
+                    // Format: NOTIFY_COMPLETE|RoomId|Slot|Date|Time
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        string msg = $"Booking phòng {p[1]} ca {p[2]} ngày {p[3]} đã hoàn thành lúc {p[4]}.";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+                // No-show notification
+                if (line.StartsWith("NOTIFY_NO_SHOW|"))
+                {
+                    // Format: NOTIFY_NO_SHOW|RoomId|SlotRange|Date|Deadline
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        string msg = $"⚠️ Bạn đã bị NO-SHOW: phòng {p[1]} ca {p[2]} ngày {p[3]} (quá deadline check-in {p[4]}).";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await LoadHomeFromServerAsync();
+                                await ReloadMyBookingsAsync();
+                            }
+                            catch (Exception ex) { AppendClientLog("[ERROR] Reload after NO_SHOW: " + ex.Message); }
+                        });
+                    }
+                    return;
+                }
+                // Fixed schedule notification
+                if (line.StartsWith("NOTIFY_FIXED|"))
+                {
+                    // Format: NOTIFY_FIXED|RoomId|Slot|Date|Subject
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        string msg = $"Fixed Schedule: {p[4]} in {p[1]}-{p[2]} on {p[3]}";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+
+                if (line.StartsWith("NOTIFY_FIXED_CREATED|"))
+                {
+                    // Format: NOTIFY_FIXED_CREATED|SubjectCode|SubjectName|RoomId|SlotStartId|SlotEndId|DateFrom|DateTo
+                    var p = line.Split('|');
+                    if (p.Length >= 8)
+                    {
+                        var slotRange = p[4] == p[5] ? p[4] : $"{p[4]}-{p[5]}";
+                        string msg = $"Bạn có lịch cố định mới: {p[0]} {p[1]} - {p[2]} | {p[3]} | {slotRange} | {p[6]} -> {p[7]}";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+
+                if (line.StartsWith("NOTIFY_FIXED_DELETED|"))
+                {
+                    // Format: NOTIFY_FIXED_DELETED|SubjectCode|SubjectName|RoomId|SlotStartId|SlotEndId|DateFrom|DateTo
+                    var p = line.Split('|');
+                    if (p.Length >= 8)
+                    {
+                        var slotRange = p[4] == p[5] ? p[4] : $"{p[4]}-{p[5]}";
+                        string msg = $"Lịch cố định đã bị xoá: {p[0]} {p[1]} - {p[2]} | {p[3]} | {slotRange} | {p[6]} -> {p[7]}";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                    }
+                    return;
+                }
+                // Force release notification
+                if (line.StartsWith("FORCE_RELEASE|"))
+                {
+                    // Format: FORCE_RELEASE|BookingId|RoomId|SlotStartId|SlotEndId
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        var slotRange = p[3] == p[4] ? p[3] : $"{p[3]}-{p[4]}";
+                        string msg = $"⚠️ Admin đã FORCE RELEASE booking của bạn: {p[2]} slots {slotRange}";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                        
+                        // Reload home và bookings
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await LoadHomeFromServerAsync();
+                                await ReloadMyBookingsAsync();
+                            }
+                            catch (Exception ex) { AppendClientLog("[ERROR] Reload after FORCE_RELEASE: " + ex.Message); }
+                        });
+                    }
+                    return;
+                }
+                // Force grant notification
+                if (line.StartsWith("FORCE_GRANT|"))
+                {
+                    // Format: FORCE_GRANT|BookingId|RoomId|SlotStartId|SlotEndId
+                    var p = line.Split('|');
+                    if (p.Length >= 5)
+                    {
+                        var slotRange = p[3] == p[4] ? p[3] : $"{p[3]}-{p[4]}";
+                        string msg = $"🎉 Admin đã FORCE GRANT cho bạn: {p[2]} slots {slotRange}";
+                        _lstLatestNotifications.Items.Insert(0, msg);
+                        
+                        // Reload home và bookings
+                        _ = Task.Run(async () =>
+                        {
+                            try 
+                            { 
+                                await LoadHomeFromServerAsync();
+                                await ReloadMyBookingsAsync();
+                            }
+                            catch (Exception ex) { AppendClientLog("[ERROR] Reload after FORCE_GRANT: " + ex.Message); }
                         });
                     }
                     return;
@@ -2844,6 +4474,33 @@ namespace BookingClient
                             {
                                 try { await ReloadMyBookingsAsync(); }
                                 catch (Exception ex) { AppendClientLog("[ERROR] ReloadMyBookingsAsync: " + ex.Message); }
+                            });
+                        }
+                    }
+                    return;
+                }
+                // ====== PUSH: MY_SCHEDULE changed ======
+                if (line.StartsWith("PUSH_MY_SCHEDULE_CHANGED|"))
+                {
+                    var p = line.Split('|');
+                    if (p.Length >= 2)
+                    {
+                        var userId = p[1];
+                        if (string.Equals(userId, _currentUser.UserId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            AppendClientLog("[INFO] MY_SCHEDULE changed -> reload bookings, fixed schedules and schedule tab");
+                            _ = Task.Run(async () =>
+                            {
+                                try 
+                                { 
+                                    // Reload bookings trước (để có virtual bookings từ fixed schedules)
+                                    await ReloadMyBookingsAsync();
+                                    // Reload fixed schedules
+                                    await LoadFixedSchedulesFromServerAsync();
+                                    // Sau đó reload schedule tab
+                                    await ReloadScheduleFromServerAsync(); 
+                                }
+                                catch (Exception ex) { AppendClientLog("[ERROR] ReloadScheduleFromServerAsync: " + ex.Message); }
                             });
                         }
                     }
@@ -3049,7 +4706,7 @@ namespace BookingClient
                 // ====== 10.RANGE ERROR ======
                 if (line.StartsWith("INFO|RANGE_ERROR|"))
                 {
-                    var msg = line.Substring("INFO|RANGE_ERROR|".Length);
+                    string msg = line.Substring("INFO|RANGE_ERROR|".Length);
 
                     _lblRequestStatus.ForeColor = Color.Red;
                     _lblRequestStatus.Text = "Lỗi RANGE: " + msg;
@@ -3246,7 +4903,6 @@ namespace BookingClient
                     return;
                 }
 
-
                 // ====== MY_BOOKINGS_BEGIN ======
                 if (line == "MY_BOOKINGS_BEGIN")
                 {
@@ -3272,6 +4928,34 @@ namespace BookingClient
                     return;
                 }
 
+                // ====== FIXED_SESSIONS ======
+                if (line.StartsWith("FIXED_SESSION|"))
+                {
+                    _isReadingFixedSessions = true;
+                    if (_fixedSessionsBuffer.Count == 0)
+                        _fixedSessionsBuffer.Clear();
+                    _fixedSessionsBuffer.Add(line);
+                    return;
+                }
+
+                if (line == "FIXED_SESSIONS|END")
+                {
+                    _isReadingFixedSessions = false;
+                    RenderFixedSessions();
+                    return;
+                }
+
+                if (line == "FIXED_SESSIONS|NONE")
+                {
+                    _myFixedSchedules.Clear();
+                    AppendClientLog("[INFO] No fixed schedules from server");
+                    return;
+                }
+
+                if (_isReadingFixedSessions)
+                {
+                    return;
+                }
 
                 // ====== 19. UNKNOWN ======
                 AppendClientLog("[WARN] Unknown push: " + line);
@@ -3282,153 +4966,9 @@ namespace BookingClient
             }
         }
 
-
         private async void BtnRequest_Click(object? sender, EventArgs e)
         {
-            if (_currentUser == null)
-            {
-                MessageBox.Show("Chưa đăng nhập.");
-                return;
-            }
-            if (_writer == null)
-            {
-                MessageBox.Show("Chưa kết nối server.");
-                return;
-            }
-            if (_gridRooms.CurrentRow == null)
-            {
-                MessageBox.Show("Vui lòng chọn phòng.");
-                return;
-            }
-
-            var roomId = _gridRooms.CurrentRow.Cells["RoomId"].Value?.ToString();
-            if (string.IsNullOrWhiteSpace(roomId))
-            {
-                MessageBox.Show("Phòng không hợp lệ.");
-                return;
-            }
-
-            var purpose = _txtPurpose.Text.Trim();
-            if (string.IsNullOrWhiteSpace(purpose))
-            {
-                MessageBox.Show("Vui lòng nhập lý do mượn phòng.");
-                return;
-            }
-
-            // Lấy list slot được tick
-            var selected = _currentRoomSlots
-                .Where(r => r.Selected)
-                .ToList();
-
-            if (selected.Count == 0)
-            {
-                MessageBox.Show("Vui lòng tick ít nhất 1 slot để request.");
-                return;
-            }
-
-            var dateKey = _dtBookingDate.Value.ToString("yyyy-MM-dd");
-
-            // ❌ KHÔNG còn chặn người khác giữ – để server cho join queue
-            // => bỏ hẳn block "isBusyByOther" cũ
-
-            // 1) Không cho chồng lên booking ĐÃ GRANT của chính mình
-            foreach (var s in selected)
-            {
-                int slotIdx = ParseSlotIndexSafe(s.SlotId);
-                if (slotIdx <= 0) continue;
-
-                bool overlapWithGrantedBooking = _myBookings.Any(b =>
-                {
-                    if (!IsGrantedBookingStatus(b.Status)) return false;
-
-                    // cùng ngày
-                    if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
-                        return false;
-
-                    // range slot của booking
-                    int start = ParseSlotIndexSafe(b.SlotStartId);
-                    int end = ParseSlotIndexSafe(b.SlotEndId);
-                    if (start <= 0 || end < start) return false;
-
-                    return slotIdx >= start && slotIdx <= end;
-                });
-
-                if (overlapWithGrantedBooking)
-                {
-                    MessageBox.Show(
-                        $"Slot {s.SlotId} trùng với một booking đã được GRANT của bạn.\nKhông được request chồng (kể cả single/range).",
-                        "Request",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Warning
-                    );
-                    return;
-                }
-            }
-
-            // 2) Kiểm tra các slot được chọn có liên tục không
-            var ordered = selected
-                .Select(s => new { Row = s, Index = ParseSlotIndexSafe(s.SlotId) })
-                .Where(x => x.Index > 0)
-                .OrderBy(x => x.Index)
-                .ToList();
-
-            if (ordered.Count == 0)
-            {
-                MessageBox.Show("Slot không hợp lệ.");
-                return;
-            }
-
-            bool isContinuous = true;
-            for (int i = 1; i < ordered.Count; i++)
-            {
-                if (ordered[i].Index != ordered[i - 1].Index + 1)
-                {
-                    isContinuous = false;
-                    break;
-                }
-            }
-
-            string slotFrom = ordered.First().Row.SlotId;
-            string slotTo = ordered.Last().Row.SlotId;
-
-            try
-            {
-                if (!isContinuous && ordered.Count > 1)
-                {
-                    MessageBox.Show("Các slot được chọn phải liên tục (S3, S4, S5...).");
-                    return;
-                }
-
-                string cmd;
-                string safePurpose = purpose
-                    .Replace("|", "/")
-                    .Replace("\r", " ")
-                    .Replace("\n", " ");
-
-                if (ordered.Count == 1)
-                {
-                    cmd = $"REQUEST|{_currentUser.UserId}|{roomId}|{slotFrom}|{safePurpose}";
-                }
-                else
-                {
-                    cmd = $"REQUEST_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{safePurpose}";
-                }
-
-
-                AppendClientLog("[SEND] " + cmd);
-                await _writer.WriteLineAsync(cmd);
-
-                _lblRequestStatus.ForeColor = Color.Blue;
-                _lblRequestStatus.Text = $"Đang gửi REQUEST cho {roomId}: {slotFrom} → {slotTo}";
-
-                // còn không thì chờ push
-                // await ReloadMyBookingsAsync();
-            }
-            catch (Exception ex)
-            {
-                AppendClientLog("[ERROR] BtnRequest_Click: " + ex.Message);
-                MessageBox.Show("Request lỗi: " + ex.Message);
-            }
+            await TrySendBookingRequestAsync();
         }
 
         private readonly SemaphoreSlim _subLock = new(1, 1);
@@ -3513,6 +5053,7 @@ namespace BookingClient
             string roomId = row.RoomId;
             string slotFrom = row.SlotStartId;
             string slotTo = row.SlotEndId;
+            string dateKey = row.Date; // yyyy-MM-dd format
 
             var confirm = MessageBox.Show(
                 $"Xác nhận RELEASE booking:\nPhòng {roomId}\nCa {slotFrom} → {slotTo}\nNgày {row.Date}",
@@ -3528,11 +5069,11 @@ namespace BookingClient
                 string cmd;
                 if (slotFrom == slotTo)
                 {
-                    cmd = $"RELEASE|{_currentUser.UserId}|{roomId}|{slotFrom}";
+                    cmd = $"RELEASE|{_currentUser.UserId}|{roomId}|{slotFrom}|{dateKey}";
                 }
                 else
                 {
-                    cmd = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}";
+                    cmd = $"RELEASE_RANGE|{_currentUser.UserId}|{roomId}|{slotFrom}|{slotTo}|{dateKey}";
                 }
 
                 AppendClientLog("[SEND] " + cmd);
@@ -3574,6 +5115,7 @@ namespace BookingClient
             {
                 if (!IsGrantedBookingStatus(b.Status)) continue;
 
+                // cùng ngày
                 if (!string.Equals(b.Date, dateKey, StringComparison.OrdinalIgnoreCase))
                     continue;
 
@@ -3630,6 +5172,50 @@ namespace BookingClient
 
             _gridRoomSlots.Refresh();
         }
+        private void RenderFixedSessions()
+        {
+            var list = new List<FixedScheduleRow>();
+
+            foreach (var l in _fixedSessionsBuffer)
+            {
+                // FIXED_SESSION|SessionId|SubjectCode|SubjectName|Class|LecturerUserId|RoomId|DayOfWeek|SlotStartId|SlotEndId|DateFrom|DateTo|Note
+                var parts = l.Split('|');
+                if (parts.Length < 13) continue;
+
+                var row = new FixedScheduleRow
+                {
+                    SessionId = Guid.TryParse(parts[1], out var sid) ? sid : Guid.Empty,
+                    SubjectCode = parts[2],
+                    SubjectName = parts[3],
+                    Class = parts[4],
+                    LecturerUserId = parts[5],
+                    RoomId = parts[6],
+                    DayOfWeek = parts[7],
+                    SlotStartId = parts[8],
+                    SlotEndId = parts[9],
+                    DateFrom = parts[10],
+                    DateTo = parts[11],
+                    Note = parts[12]
+                };
+                list.Add(row);
+            }
+
+            _myFixedSchedules = list;
+            _fixedSessionsBuffer.Clear();
+            
+            AppendClientLog($"[INFO] Loaded {list.Count} fixed schedules from server");
+            
+            // Reload schedule tab nếu đang hiển thị
+            if (_tabMain != null && _tabSchedule != null && _tabMain.SelectedTab == _tabSchedule)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try { await ReloadScheduleFromServerAsync(); }
+                    catch (Exception ex) { AppendClientLog($"[ERROR] ReloadScheduleFromServerAsync: {ex.Message}"); }
+                });
+            }
+        }
+
         private void RenderMyBookings()
         {
             _myBookings.Clear();
@@ -3734,16 +5320,29 @@ namespace BookingClient
                     var slotId = parts[1];
                     string status = parts[3];
                     string bookingStatus = parts[6];
-                    // Nếu status hoặc bookingStatus chứa LOCK thì hiển thị BUSY/LOCKED
+                    
+                    // ✅ FIX: Hiển thị đúng status từ server
                     string displayStatus = status;
-                    if (status.ToUpper().Contains("LOCK") || bookingStatus.ToUpper().Contains("LOCK"))
+                    if (status == "LOCKED")
                     {
-                        displayStatus = "BUSY"; // hoặc "LOCKED" nếu muốn rõ hơn
+                        // Slot bị lock bởi fixed schedule - hiển thị LOCKED
+                        displayStatus = "LOCKED";
+                    }
+                    else if (status == "BUSY")
+                    {
+                        // Slot đang được sử dụng - hiển thị BUSY với booking status
+                        displayStatus = string.IsNullOrEmpty(bookingStatus) ? "BUSY" : $"BUSY ({bookingStatus})";
+                    }
+                    else if (status == "FREE")
+                    {
+                        displayStatus = "FREE";
                     }
                     else
                     {
-                        displayStatus = $"{status} ({bookingStatus})";
+                        // Các trạng thái khác (BUSY_EVT, etc.)
+                        displayStatus = status;
                     }
+                    
                     _currentRoomSlots.Add(new RoomSlotRow
                     {
                         Selected = oldSelected.Contains(slotId),
@@ -3800,10 +5399,9 @@ namespace BookingClient
                 if (!string.IsNullOrWhiteSpace(r.SlotId))
                     r.Selected = selected.Contains(r.SlotId);
             }
-
-            // nếu bạn dùng BindingList/BindingSource thì nên refresh grid
             _gridRoomSlots?.Refresh();
         }
+        
         private void ApplySlotDeltaUpdate(string line)
         {
             if (InvokeRequired) { BeginInvoke(new Action(() => ApplySlotDeltaUpdate(line))); return; }
@@ -3831,7 +5429,25 @@ namespace BookingClient
             if (idx < 0) return;
 
             var row = _currentRoomSlots[idx];
-            row.Status = $"{status} ({bookingStatus})";
+            
+            // ✅ FIX: Hiển thị đúng status từ SLOT_UPDATE
+            if (status == "LOCKED")
+            {
+                row.Status = "LOCKED";
+            }
+            else if (status == "BUSY")
+            {
+                row.Status = string.IsNullOrEmpty(bookingStatus) ? "BUSY" : $"BUSY ({bookingStatus})";
+            }
+            else if (status == "FREE")
+            {
+                row.Status = "FREE";
+            }
+            else
+            {
+                row.Status = status;
+            }
+            
             row.UserId = userId;
             row.HolderName = fullName;
             row.Purpose = purpose;
@@ -3840,6 +5456,82 @@ namespace BookingClient
             _bsRoomSlots.ResetItem(idx);
 
             HighlightSlotsOfMyBookingsInCurrentRoom();
+        }
+
+        private void HandleGlobalHotkeys(KeyEventArgs e)
+        {
+            if (e.Control && e.Shift && e.KeyCode == Keys.L)
+            {
+                if (!string.Equals(_currentUser.UserType, "Staff", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                if (_tabMain != null && _tabLog != null)
+                    _tabMain.SelectedTab = _tabLog;
+
+                e.Handled = true;
+            }
+        }
+
+        private Panel CreateSidebarItem(string glyph, string title, Action onClick)
+        {
+            var item = new Panel
+            {
+                Left = 12,
+                Width = _panelSidebar.Width - 24,
+                Height = 44,
+                BackColor = Color.FromArgb(20, 20, 24),
+                Cursor = Cursors.Hand
+            };
+
+            var icon = new Label
+            {
+                Left = 12,
+                Top = 10,
+                Width = 24,
+                Height = 24,
+                Text = glyph,
+                ForeColor = Color.White,
+                Font = new Font("Segoe MDL2 Assets", 14, FontStyle.Regular),
+                BackColor = Color.Transparent
+            };
+            item.Controls.Add(icon);
+
+            var text = new Label
+            {
+                Left = 44,
+                Top = 12,
+                Width = item.Width - 56,
+                Height = 20,
+                Text = title,
+                ForeColor = Color.White,
+                Font = new Font("Segoe UI", 10, FontStyle.Bold),
+                BackColor = Color.Transparent
+            };
+            item.Controls.Add(text);
+
+            void click(object? s, EventArgs e)
+            {
+                onClick();
+            }
+
+            item.Click += click;
+            icon.Click += click;
+            text.Click += click;
+
+            return item;
+        }
+
+        private void SetSidebarActive(Panel active)
+        {
+            foreach (Control c in _panelSidebar.Controls)
+            {
+                if (c is Panel p)
+                {
+                    p.BackColor = (p == active)
+                        ? Color.FromArgb(45, 45, 55)
+                        : Color.FromArgb(20, 20, 24);
+                }
+            }
         }
 
         private static void EnableTcpKeepAlive(Socket s, uint timeMs = 30_000, uint intervalMs = 10_000)
