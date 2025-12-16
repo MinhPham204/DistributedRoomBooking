@@ -31,6 +31,10 @@ namespace BookingClient
         private bool _isReadingSlotConfig = false;
         private List<(string slotId, string start, string end)> _slotConfigTemp =
             new List<(string, string, string)>();
+        private bool _isChangingPassword = false;
+        private string? _pendingNewPassword;
+        private string? _pendingContactEmail;
+        private string? _pendingContactPhone;
         //TCP Conection
         private TcpClient? _tcp;
         private NetworkStream? _stream;
@@ -627,7 +631,7 @@ namespace BookingClient
             {
                 await HeaderCheckConnectAsync();
             };
-            _panelHeader.Controls.Add(_btnHeaderCheckConnect);
+            // _panelHeader.Controls.Add(_btnHeaderCheckConnect);
 
             // ===== Nút ĐĂNG XUẤT trên header =====
             _btnLogout = new Button
@@ -661,7 +665,7 @@ namespace BookingClient
                 BorderStyle = BorderStyle.FixedSingle
             };
             _pnlHeaderConnectDot.Left = ClientSize.Width - 65;
-            _panelHeader.Controls.Add(_pnlHeaderConnectDot);
+            // _panelHeader.Controls.Add(_pnlHeaderConnectDot);
 
             _lblHeaderConnectText = new Label
             {
@@ -673,7 +677,7 @@ namespace BookingClient
                 ForeColor = Color.Red
             };
             _lblHeaderConnectText.Left = ClientSize.Width - 50;
-            _panelHeader.Controls.Add(_lblHeaderConnectText);
+            // _panelHeader.Controls.Add(_lblHeaderConnectText);
 
             _lblRunningTime = new Label
             {
@@ -792,7 +796,7 @@ namespace BookingClient
             BuildScheduleTabUi();
             BuildNotificationsTabUi();
             BuildAccountTabUi();
-            // Khởi tạo thời gian header theo server
+            // Khởi tạo thởi gian header theo server
             // _ = InitHeaderTimeAsync();
         }
         private Task<bool> HeaderCheckConnectAsync()
@@ -1665,7 +1669,18 @@ namespace BookingClient
                 AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
                 AutoGenerateColumns = false
             };
-            _grpRoomSlots.Controls.Add(_gridRoomSlots);
+
+            // Wrapper để “hạ” grid xuống
+            var wrap = new Panel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(0, 60, 0, 0) // 60px trống phía trên -> grid hạ xuống
+            };
+
+            wrap.Controls.Add(_gridRoomSlots);
+
+            // add panel vào groupbox thay vì add grid trực tiếp
+            _grpRoomSlots.Controls.Add(wrap);
             _gridRoomSlots.CurrentCellDirtyStateChanged += (s, e) =>
             {
                 if (_gridRoomSlots.IsCurrentCellDirty)
@@ -1723,7 +1738,7 @@ namespace BookingClient
                 Left = 10,
                 Top = _gridRooms.Bottom + 10,
                 Width = 950,
-                Height = 230
+                Height = 400
             };
             _tabBooking.Controls.Add(grpMyBookings);
 
@@ -1732,7 +1747,7 @@ namespace BookingClient
                 Left = 10,
                 Top = 20,
                 Width = 720,
-                Height = 220,
+                Height = 300,
                 ReadOnly = true,
                 AllowUserToAddRows = false,
                 AllowUserToDeleteRows = false,
@@ -1833,7 +1848,7 @@ namespace BookingClient
                 Top = 29,
                 Width = 50
             };
-            grpMyBookings.Controls.Add(lblPurpose);
+            // grpMyBookings.Controls.Add(lblPurpose);
 
             _txtPurpose = new TextBox
             {
@@ -1843,7 +1858,7 @@ namespace BookingClient
                 Height = 80,
                 Multiline = true
             };
-            grpMyBookings.Controls.Add(_txtPurpose);
+            // grpMyBookings.Controls.Add(_txtPurpose);
 
             // Nút REQUEST
             _btnRequest = new Button
@@ -1862,7 +1877,7 @@ namespace BookingClient
             {
                 Text = "RELEASE",
                 Left = 840,
-                Top = 140,
+                Top = 100,
                 Width = 90,
                 Height = 30
             };
@@ -2662,7 +2677,7 @@ namespace BookingClient
             root.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
             _tabSchedule.Controls.Add(root);
 
-            var topBar = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+            var topBar = new Panel { Dock = DockStyle.Top, BackColor = Color.White };
             root.Controls.Add(topBar, 0, 0);
             root.SetColumnSpan(topBar, 2);
 
@@ -3413,7 +3428,7 @@ namespace BookingClient
                 Width = 120,
                 Height = 30
             };
-            profileCard.Controls.Add(_btnAccCheckConnect);
+            // profileCard.Controls.Add(_btnAccCheckConnect);
 
             _pnlAccConnectDot = new Panel
             {
@@ -3424,7 +3439,7 @@ namespace BookingClient
                 BackColor = Color.Red,
                 BorderStyle = BorderStyle.FixedSingle
             };
-            profileCard.Controls.Add(_pnlAccConnectDot);
+            // profileCard.Controls.Add(_pnlAccConnectDot);
 
             _lblAccConnectText = new Label
             {
@@ -3435,7 +3450,7 @@ namespace BookingClient
                 Text = "Lost",
                 ForeColor = Color.Red
             };
-            profileCard.Controls.Add(_lblAccConnectText);
+            // profileCard.Controls.Add(_lblAccConnectText);
 
             var grpContact = new GroupBox
             {
@@ -3597,6 +3612,9 @@ namespace BookingClient
                     return;
                 }
 
+                _pendingContactEmail = email;
+                _pendingContactPhone = phone;
+
                 // ⭐ Gửi lên server — KHÔNG chờ phản hồi!
                 string cmd = $"UPDATE_CONTACT|{_currentUser.UserId}|{email}|{phone}";
                 await _writer.WriteLineAsync(cmd);
@@ -3656,59 +3674,29 @@ namespace BookingClient
             try
             {
                 // ⭐ KHÔNG mở TCP mới — dùng persistent TCP
-                if (_writer == null || _reader == null)
+                if (_writer == null)
                 {
                     MessageBox.Show("Chưa sẵn sàng kết nối server.", "Đổi mật khẩu",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                     return;
                 }
 
+                if (_isChangingPassword)
+                    return;
+                _isChangingPassword = true;
+                _pendingNewPassword = newPwd;
+                if (_btnChangePassword != null)
+                    _btnChangePassword.Enabled = false;
+
                 // ⭐ Gửi lệnh
                 string cmd = $"CHANGE_PASSWORD|{_currentUser.UserId}|{oldPwd}|{newPwd}";
                 await _writer.WriteLineAsync(cmd);
-
-                // ⭐ Đọc trả lời
-                string? resp = await _reader.ReadLineAsync();
-                if (resp == null)
-                {
-                    MessageBox.Show("Không nhận được phản hồi từ server.", "Đổi mật khẩu",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-
-                if (resp == "OK")
-                {
-                    MessageBox.Show(
-                        "Đổi mật khẩu thành công.",
-                        "Đổi mật khẩu",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information
-                    );
-
-                    // Clear UI fields
-                    _txtOldPassword.Text = "";
-                    _txtNewPassword.Text = "";
-                    _txtConfirmPassword.Text = "";
-                    return;
-                }
-
-                if (resp.StartsWith("ERR|"))
-                {
-                    MessageBox.Show(resp.Substring(4), "Đổi mật khẩu",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-
-                // ❌ Bắt trường hợp server trả về không đúng format
-                MessageBox.Show(
-                    "Phản hồi không hợp lệ từ server: " + resp,
-                    "Đổi mật khẩu",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error
-                );
             }
             catch (Exception ex)
             {
+                _isChangingPassword = false;
+                if (_btnChangePassword != null)
+                    _btnChangePassword.Enabled = true;
                 MessageBox.Show("Lỗi khi đổi mật khẩu:\n" + ex.Message,
                     "Đổi mật khẩu", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -3915,7 +3903,7 @@ namespace BookingClient
                 string.IsNullOrWhiteSpace(slotFrom) ||
                 string.IsNullOrWhiteSpace(slotTo))
             {
-                MessageBox.Show("Vui lòng chọn phòng và range ca.", "Request range",
+                MessageBox.Show("Vui lòng chọn đầy đủ phòng và range ca.", "Request range",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -4197,9 +4185,6 @@ namespace BookingClient
         }
 
         private void HandleServerMessage(string line)
-
-
-
         {
             try
             {
@@ -4728,8 +4713,55 @@ namespace BookingClient
                 }
 
                 // ====== 12. UPDATE_CONTACT response ======
+                if (line == "CHANGE_PASSWORD_OK")
+                {
+                    _isChangingPassword = false;
+                    if (_btnChangePassword != null)
+                        _btnChangePassword.Enabled = true;
+
+                    if (!string.IsNullOrWhiteSpace(_pendingNewPassword))
+                        _currentUser.Password = _pendingNewPassword;
+                    _pendingNewPassword = null;
+
+                    MessageBox.Show(
+                        "Đổi mật khẩu thành công.",
+                        "Đổi mật khẩu",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information
+                    );
+
+                    _txtOldPassword.Text = "";
+                    _txtNewPassword.Text = "";
+                    _txtConfirmPassword.Text = "";
+                    return;
+                }
+
+                if (line.StartsWith("CHANGE_PASSWORD_ERR|"))
+                {
+                    _isChangingPassword = false;
+                    if (_btnChangePassword != null)
+                        _btnChangePassword.Enabled = true;
+                    _pendingNewPassword = null;
+
+                    var msg = line.Substring("CHANGE_PASSWORD_ERR|".Length);
+                    MessageBox.Show(
+                        msg,
+                        "Đổi mật khẩu",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning
+                    );
+                    return;
+                }
+
                 if (line == "UPDATE_CONTACT_OK")
                 {
+                    if (_pendingContactEmail != null)
+                        _currentUser.Email = _pendingContactEmail;
+                    if (_pendingContactPhone != null)
+                        _currentUser.Phone = _pendingContactPhone;
+                    _pendingContactEmail = null;
+                    _pendingContactPhone = null;
+
                     MessageBox.Show(
                         "Cập nhật thông tin liên hệ thành công!",
                         "Account",
@@ -4744,6 +4776,8 @@ namespace BookingClient
                 if (line.StartsWith("UPDATE_CONTACT_ERR|"))
                 {
                     var msg = line.Substring("UPDATE_CONTACT_ERR|".Length);
+                    _pendingContactEmail = null;
+                    _pendingContactPhone = null;
                     MessageBox.Show(
                         msg,
                         "Account",

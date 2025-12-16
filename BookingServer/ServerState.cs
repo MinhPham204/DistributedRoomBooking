@@ -3701,6 +3701,14 @@ class ServerState{
     {
         var from = fromDate.Date;
         var to = toDate.Date;
+        static string NormStatus(string? s)
+        {
+            var v = (s ?? string.Empty).Trim().ToUpperInvariant();
+            v = v.Replace('-', '_').Replace(' ', '_');
+            while (v.Contains("__", StringComparison.Ordinal))
+                v = v.Replace("__", "_", StringComparison.Ordinal);
+            return v;
+        }
 
         lock (_lock)
         {
@@ -3709,7 +3717,11 @@ class ServerState{
             {
                 var d = DateTime.Parse(b.Date); // b.Date = "yyyy-MM-dd"
                 return d >= from && d <= to;
-            });
+            })
+            .GroupBy(b => b.BookingId)
+            .Select(g => g
+                .OrderByDescending(x => x.UpdatedAt)
+                .First());
 
             var groups = filtered.GroupBy(b => b.RoomId);
 
@@ -3718,8 +3730,8 @@ class ServerState{
             {
                 var roomId = g.Key;
                 var total = g.Count();
-                var noShow = g.Count(x => x.Status == "NO_SHOW");
-                var cancelled = g.Count(x => x.Status == "CANCELLED");
+                var noShow = g.Count(x => NormStatus(x.Status) == "NO_SHOW");
+                var cancelled = g.Count(x => NormStatus(x.Status) == "CANCELLED");
 
                 result.Add(new RoomStats
                 {
@@ -3743,6 +3755,14 @@ class ServerState{
     {
         var from = fromDate.Date;
         var to = toDate.Date;
+        static string NormStatus(string? s)
+        {
+            var v = (s ?? string.Empty).Trim().ToUpperInvariant();
+            v = v.Replace('-', '_').Replace(' ', '_');
+            while (v.Contains("__", StringComparison.Ordinal))
+                v = v.Replace("__", "_", StringComparison.Ordinal);
+            return v;
+        }
 
         lock (_lock)
         {
@@ -3750,7 +3770,11 @@ class ServerState{
             {
                 var d = DateTime.Parse(b.Date);
                 return d >= from && d <= to;
-            });
+            })
+            .GroupBy(b => b.BookingId)
+            .Select(g => g
+                .OrderByDescending(x => x.UpdatedAt)
+                .First());
 
             // Join sang _users để lấy UserType
             var query = filtered
@@ -3767,7 +3791,7 @@ class ServerState{
             foreach (var g in groups)
             {
                 var total = g.Count();
-                var noShow = g.Count(x => x.Booking.Status == "NO_SHOW");
+                var noShow = g.Count(x => NormStatus(x.Booking.Status) == "NO_SHOW");
 
                 result.Add(new UserTypeStats
                 {

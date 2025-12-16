@@ -750,18 +750,24 @@ public partial class Form1 : Form
 
     private void ApplySlotGridDisabledRoomStyle()
     {
-        if (_gridSlots == null) return;
-
-        foreach (DataGridViewRow row in _gridSlots.Rows)
+        void ApplyFor(DataGridView? grid)
         {
-            if (row.DataBoundItem is not SlotSummary ss) continue;
-            bool disabled = IsRoomDisabledUi(ss.RoomId);
+            if (grid == null) return;
 
-            row.DefaultCellStyle.ForeColor = disabled ? Color.FromArgb(156, 163, 175) : _gridSlots.DefaultCellStyle.ForeColor;
-            row.DefaultCellStyle.BackColor = disabled ? Color.FromArgb(243, 244, 246) : _gridSlots.DefaultCellStyle.BackColor;
-            row.DefaultCellStyle.SelectionBackColor = disabled ? Color.FromArgb(229, 231, 235) : _gridSlots.DefaultCellStyle.SelectionBackColor;
-            row.DefaultCellStyle.SelectionForeColor = disabled ? Color.FromArgb(107, 114, 128) : _gridSlots.DefaultCellStyle.SelectionForeColor;
+            foreach (DataGridViewRow row in grid.Rows)
+            {
+                if (row.DataBoundItem is not SlotSummary ss) continue;
+                bool disabled = IsRoomDisabledUi(ss.RoomId);
+
+                row.DefaultCellStyle.ForeColor = disabled ? Color.FromArgb(156, 163, 175) : grid.DefaultCellStyle.ForeColor;
+                row.DefaultCellStyle.BackColor = disabled ? Color.FromArgb(243, 244, 246) : grid.DefaultCellStyle.BackColor;
+                row.DefaultCellStyle.SelectionBackColor = disabled ? Color.FromArgb(229, 231, 235) : grid.DefaultCellStyle.SelectionBackColor;
+                row.DefaultCellStyle.SelectionForeColor = disabled ? Color.FromArgb(107, 114, 128) : grid.DefaultCellStyle.SelectionForeColor;
+            }
         }
+
+        ApplyFor(_gridSlots);
+        ApplyFor(_gridRoomDaily);
     }
 
     private void ConfigureRoomComboBox(ComboBox cb)
@@ -959,7 +965,7 @@ public partial class Form1 : Form
         var pnlRoomDaily = new Panel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(0, 5, 0, 0)  // Top = 5px -> tạo khoảng trống cho header
+            Padding = new Padding(0, 20, 0, 0)  // Top = 5px -> tạo khoảng trống cho header
         };
         _tabLeftByRoom.Controls.Add(pnlRoomDaily);
 
@@ -1169,7 +1175,7 @@ public partial class Form1 : Form
         // =========================================================
         // 3) ADMIN ACTIONS
         // =========================================================
-        _grpCheckin = MakeGroup("Admin actions", 120);
+        _grpCheckin = MakeGroup("Admin actions", 190);
 
         _btnCheckIn = new Button { Left = 10, Top = 25, Width = 150, Text = "CHECK-IN", Enabled = false };
         _btnCheckIn.Click += BtnCheckIn_Click;
@@ -1179,13 +1185,13 @@ public partial class Form1 : Form
         _btnComplete.Click += BtnComplete_Click;
         _grpCheckin.Controls.Add(_btnComplete);
 
-        var lblForceRoom = new Label { Left = 330, Top = 30, Width = 45, Text = "Room:" };
+        var lblForceRoom = new Label { Left = 10, Top = 130, Width = 45, Text = "Room:" };
         _grpCheckin.Controls.Add(lblForceRoom);
 
         _cbForceRoom = new ComboBox
         {
-            Left = 375,
-            Top = 26,
+            Left = 65,
+            Top = 125,
             Width = 80,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
@@ -1197,28 +1203,28 @@ public partial class Form1 : Form
         _txtForceUserId = new TextBox { Left = 90, Top = 58, Width = 140, CharacterCasing = CharacterCasing.Upper };
         _grpCheckin.Controls.Add(_txtForceUserId);
 
-        _btnForceGrant = new Button { Left = 240, Top = 56, Width = 80, Text = "GRANT" };
+        _btnForceGrant = new Button { Left = 65, Top = 90, Width = 80, Text = "GRANT" };
         _btnForceGrant.Click += BtnForceGrant_Click;
         _grpCheckin.Controls.Add(_btnForceGrant);
 
-        _btnForceRelease = new Button { Left = 330, Top = 56, Width = 80, Text = "RELEASE" };
+        _btnForceRelease = new Button { Left = 160, Top = 90, Width = 80, Text = "RELEASE" };
         _btnForceRelease.Click += BtnForceRelease_Click;
         _grpCheckin.Controls.Add(_btnForceRelease);
 
-        var lblRange = new Label { Left = 430, Top = 62, Width = 55, Text = "Range:" };
+        var lblRange = new Label { Left = 10, Top = 130, Width = 55, Text = "Range:" };
         _grpCheckin.Controls.Add(lblRange);
 
         _cbForceSlotStart = new ComboBox
         {
-            Left = 485,
-            Top = 58,
+            Left = 65,
+            Top = 155,
             Width = 60,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
         _cbForceSlotEnd = new ComboBox
         {
-            Left = 550,
-            Top = 58,
+            Left = 140,
+            Top = 155,
             Width = 60,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
@@ -1237,8 +1243,8 @@ public partial class Form1 : Form
 
         _btnForceGrantRange = new Button
         {
-            Left = 620,
-            Top = 56,
+            Left = 220,
+            Top = 155,
             Width = 100,
             Text = "GRANT RANGE"
         };
@@ -1248,19 +1254,19 @@ public partial class Form1 : Form
         // =========================================================
         // 4) EVENT LOCK
         // =========================================================
-        var grpEvent = MakeGroup("Event lock", 90);
+        var grpEvent = MakeGroup("Event lock", 120);
 
         var lblEventNote = new Label { Left = 10, Top = 35, Width = 80, Text = "Event note:" };
         grpEvent.Controls.Add(lblEventNote);
 
-        _txtEventNote = new TextBox { Left = 90, Top = 32, Width = 260 };
+        _txtEventNote = new TextBox { Left = 90, Top = 32, Width = 220 };
         grpEvent.Controls.Add(_txtEventNote);
 
-        _btnLockEvent = new Button { Left = 360, Top = 30, Width = 120, Text = "Lock for Event" };
+        _btnLockEvent = new Button { Left = 85, Top = 60, Width = 120, Text = "Lock for Event" };
         _btnLockEvent.Click += BtnLockEvent_Click;
         grpEvent.Controls.Add(_btnLockEvent);
 
-        _btnUnlockEvent = new Button { Left = 490, Top = 30, Width = 120, Text = "Unlock Event" };
+        _btnUnlockEvent = new Button { Left = 210, Top = 60, Width = 120, Text = "Unlock Event" };
         _btnUnlockEvent.Click += BtnUnlockEvent_Click;
         grpEvent.Controls.Add(_btnUnlockEvent);
 
@@ -1327,7 +1333,7 @@ public partial class Form1 : Form
 
 
         // Panel phải: User detail
-        _grpQueueUserDetail = new GroupBox { Text = "Queue user detail", Dock = DockStyle.Fill, Padding = new Padding(10) };
+        _grpQueueUserDetail = new GroupBox { Text = "Queue user detail", Dock = DockStyle.Fill, Padding = new Padding(1) };
         queueContainer.Panel2.Controls.Add(_grpQueueUserDetail);
 
         var qTable = new TableLayoutPanel
@@ -3233,7 +3239,8 @@ public partial class Form1 : Form
 
         grpGeneral.Controls.AddRange(new Control[]
         {
-            lblDeadline, _numCheckinDeadlineMinutes,
+            // lblDeadline, _
+            // numCheckinDeadlineMinutes,
             _chkSendEmailGrant, _chkSendEmailForce, _chkSendEmailNoShow, _chkNotifyClient
         });
 
@@ -3299,7 +3306,7 @@ public partial class Form1 : Form
         {
             Text = "Save settings",
             Left = 560,
-            Top = 540,   // bên dưới nhóm Time một chút
+            Top = 400,   // bên dưới nhóm Time một chút
             Width = 150,
             Height = 30
         };
@@ -3307,64 +3314,64 @@ public partial class Form1 : Form
         _tabSettings.Controls.Add(_btnSettingsSave);
 
         // ===== Group: Demo time (đặt dưới SMTP) =====
-        var grpTime = new GroupBox
-        {
-            Text = "Demo time",
-            Left = 560,
-            Top = 410,   // ngay dưới grpSmtp (top 180 + height 220 = 400, cộng thêm 10px)
-            Width = 300,
-            Height = 120
-        };
-        _tabSettings.Controls.Add(grpTime);
+        // var grpTime = new GroupBox
+        // {
+        //     Text = "Demo time",
+        //     Left = 560,
+        //     Top = 410,   // ngay dưới grpSmtp (top 180 + height 220 = 400, cộng thêm 10px)
+        //     Width = 300,
+        //     Height = 120
+        // };
+        // _tabSettings.Controls.Add(grpTime);
 
-        var dtDemo = new DateTimePicker
-        {
-            Format = DateTimePickerFormat.Custom,
-            CustomFormat = "dd/MM/yyyy HH:mm",
-            Width = 160,
-            Left = 10,
-            Top = 25
-        };
-        grpTime.Controls.Add(dtDemo);
+        // var dtDemo = new DateTimePicker
+        // {
+        //     Format = DateTimePickerFormat.Custom,
+        //     CustomFormat = "dd/MM/yyyy HH:mm",
+        //     Width = 160,
+        //     Left = 10,
+        //     Top = 25
+        // };
+        // grpTime.Controls.Add(dtDemo);
 
-        var btnUseDemo = new Button
-        {
-            Text = "Use demo time",
-            Left = 180,
-            Top = 22,
-            Width = 110
-        };
-        grpTime.Controls.Add(btnUseDemo);
+        // var btnUseDemo = new Button
+        // {
+        //     Text = "Use demo time",
+        //     Left = 180,
+        //     Top = 22,
+        //     Width = 110
+        // };
+        // grpTime.Controls.Add(btnUseDemo);
 
-        var btnUseSystem = new Button
-        {
-            Text = "Use system time",
-            Left = 180,
-            Top = 55,
-            Width = 110
-        };
-        grpTime.Controls.Add(btnUseSystem);
+        // var btnUseSystem = new Button
+        // {
+        //     Text = "Use system time",
+        //     Left = 180,
+        //     Top = 55,
+        //     Width = 110
+        // };
+        // grpTime.Controls.Add(btnUseSystem);
 
-        btnUseDemo.Click += (_, __) =>
-        {
-            var logger = new UiLogger(this);
-            _state.SetDemoNow(dtDemo.Value, logger);
-            _state.BroadcastNow();
-        };
+        // btnUseDemo.Click += (_, __) =>
+        // {
+        //     var logger = new UiLogger(this);
+        //     _state.SetDemoNow(dtDemo.Value, logger);
+        //     _state.BroadcastNow();
+        // };
 
-        btnUseSystem.Click += (_, __) =>
-        {
-            var logger = new UiLogger(this);
-            _state.ResetDemoNow(logger);
-            _state.BroadcastNow();
-        };
+        // btnUseSystem.Click += (_, __) =>
+        // {
+        //     var logger = new UiLogger(this);
+        //     _state.ResetDemoNow(logger);
+        //     _state.BroadcastNow();
+        // };
 
         // ===== Group: Dangerous Operations =====
         var grpDangerous = new GroupBox
         {
             Text = "",
             Left = 560,
-            Top = 580,
+            Top = 450,
             Width = 300,
             Height = 100,
             ForeColor = Color.Red
@@ -3374,7 +3381,7 @@ public partial class Form1 : Form
         var lblWarning = new Label
         {
             Left = 10,
-            Top = 25,
+            Top = 20,
             Width = 280,
             Height = 30,
             Text = " WARNING: This will delete ALL data!\n(Bookings, Fixed Schedules, Locks)",
@@ -4100,7 +4107,7 @@ public partial class Form1 : Form
                                 // UPDATE_CONTACT|UserId|Email|Phone
                                 if (parts.Length < 4)
                                 {
-                                    await SendAsync(stream, "ERR|Invalid UPDATE_CONTACT format\n");
+                                    await SendAsync(stream, "UPDATE_CONTACT_ERR|Invalid UPDATE_CONTACT format\n");
                                     break;
                                 }
 
@@ -4110,11 +4117,20 @@ public partial class Form1 : Form
 
                                 if (_state.UpdateUserContact(userId, email, phone, out var error))
                                 {
-                                    await SendAsync(stream, "OK\n");
+                                    await SendAsync(stream, "UPDATE_CONTACT_OK\n");
+
+                                    // Refresh UI user grid ngay lập tức (không cần restart server)
+                                    if (!IsDisposed && IsHandleCreated)
+                                    {
+                                        BeginInvoke(new Action(() =>
+                                        {
+                                            RefreshUserGrid();
+                                        }));
+                                    }
                                 }
                                 else
                                 {
-                                    await SendAsync(stream, "ERR|" + error + "\n");
+                                    await SendAsync(stream, "UPDATE_CONTACT_ERR|" + error + "\n");
                                 }
 
                                 break;
@@ -4124,7 +4140,7 @@ public partial class Form1 : Form
                                 // CHANGE_PASSWORD|UserId|OldPwd|NewPwd
                                 if (parts.Length < 4)
                                 {
-                                    await SendAsync(stream, "ERR|Invalid CHANGE_PASSWORD format\n");
+                                    await SendAsync(stream, "CHANGE_PASSWORD_ERR|Invalid CHANGE_PASSWORD format\n");
                                     break;
                                 }
 
@@ -4134,11 +4150,11 @@ public partial class Form1 : Form
 
                                 if (_state.ChangeUserPassword(userId, oldPwd, newPwd, out var error))
                                 {
-                                    await SendAsync(stream, "OK\n");
+                                    await SendAsync(stream, "CHANGE_PASSWORD_OK\n");
                                 }
                                 else
                                 {
-                                    await SendAsync(stream, "ERR|" + error + "\n");
+                                    await SendAsync(stream, "CHANGE_PASSWORD_ERR|" + error + "\n");
                                 }
 
                                 break;
@@ -4451,6 +4467,8 @@ public partial class Form1 : Form
                 _gridRoomDaily.AutoGenerateColumns = true;
                 _gridRoomDaily.DataSource = null;
                 _gridRoomDaily.DataSource = roomDaily;
+
+                ApplySlotGridDisabledRoomStyle();
 
                 if (!string.IsNullOrWhiteSpace(selectedDailySlotId))
                 {

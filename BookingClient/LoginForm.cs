@@ -156,8 +156,8 @@ namespace BookingClient
                 RowCount = 2,
                 Padding = new Padding(0)
             };
-            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 400f));
-            stack.RowStyles.Add(new RowStyle(SizeType.Absolute, 90f));
+            stack.RowStyles.Add(new RowStyle(SizeType.Percent, 100f));
+            stack.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.Controls.Add(stack, 1, 1);
 
             _pnlCard = new GlassPanel
@@ -177,7 +177,8 @@ namespace BookingClient
 
             _lblError = new Label
             {
-                Dock = DockStyle.Fill,
+                AutoSize = true,
+                Dock = DockStyle.Top,
                 ForeColor = Color.FromArgb(239, 68, 68),
                 BackColor = Color.FromArgb(90, 0, 0, 0),
                 Text = "",
