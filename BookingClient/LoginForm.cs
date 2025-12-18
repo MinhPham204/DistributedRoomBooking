@@ -193,11 +193,12 @@ namespace BookingClient
                 Dock = DockStyle.Fill,
                 BackColor = Color.Transparent,
                 ColumnCount = 1,
-                RowCount = 9
+                RowCount = 10
             };
             cardLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // title
             cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // status
+            cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // server ip
             cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // user label
             cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // user textbox
             cardLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize)); // pwd label
@@ -266,6 +267,48 @@ namespace BookingClient
             _btnCheckConnect.Click += async (s, e) => { await CheckConnectAsync(); };
             statusRow.Controls.Add(_btnCheckConnect);
 
+            var ipRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                BackColor = Color.Transparent,
+                ColumnCount = 2,
+                RowCount = 1,
+                Margin = new Padding(0, 0, 0, 10),
+                Padding = new Padding(0)
+            };
+            ipRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 96f));
+            ipRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            cardLayout.Controls.Add(ipRow, 0, 2);
+
+            var lblServerIp = new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = "Server IPv4",
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Margin = new Padding(0, 4, 8, 0)
+            };
+            ipRow.Controls.Add(lblServerIp, 0, 0);
+
+            _txtServerIp = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                BorderStyle = BorderStyle.FixedSingle,
+                Font = new Font("Segoe UI", 10, FontStyle.Regular),
+                Text = "",
+                Margin = new Padding(0)
+            };
+            _txtServerIp.TextChanged += (s, e) =>
+            {
+                _isConnectedOk = false;
+                _detectedServerIp = null;
+                _btnLogin.Enabled = false;
+            };
+            ipRow.Controls.Add(_txtServerIp, 1, 0);
+
             var lblUser = new Label
             {
                 Dock = DockStyle.Fill,
@@ -274,7 +317,7 @@ namespace BookingClient
                 BackColor = Color.Transparent,
                 Margin = new Padding(0, 0, 0, 4)
             };
-            cardLayout.Controls.Add(lblUser, 0, 2);
+            cardLayout.Controls.Add(lblUser, 0, 3);
 
             _txtUserId = new TextBox
             {
@@ -283,7 +326,7 @@ namespace BookingClient
                 Font = new Font("Segoe UI", 10, FontStyle.Regular),
                 Margin = new Padding(0, 0, 0, 10)
             };
-            cardLayout.Controls.Add(_txtUserId, 0, 3);
+            cardLayout.Controls.Add(_txtUserId, 0, 4);
 
             var lblPwd = new Label
             {
@@ -293,7 +336,7 @@ namespace BookingClient
                 BackColor = Color.Transparent,
                 Margin = new Padding(0, 0, 0, 4)
             };
-            cardLayout.Controls.Add(lblPwd, 0, 4);
+            cardLayout.Controls.Add(lblPwd, 0, 5);
 
             var pwdRow = new TableLayoutPanel
             {
@@ -308,7 +351,7 @@ namespace BookingClient
             };
             pwdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
             pwdRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 64f));
-            cardLayout.Controls.Add(pwdRow, 0, 5);
+            cardLayout.Controls.Add(pwdRow, 0, 6);
 
             _btnTogglePassword = new Button
             {
@@ -346,7 +389,7 @@ namespace BookingClient
                 BackColor = Color.Transparent,
                 Margin = new Padding(0, 0, 0, 12)
             };
-            cardLayout.Controls.Add(_chkRemember, 0, 6);
+            cardLayout.Controls.Add(_chkRemember, 0, 7);
 
             _btnLogin = new Button
             {
@@ -361,7 +404,7 @@ namespace BookingClient
             };
             _btnLogin.FlatAppearance.BorderSize = 0;
             _btnLogin.Click += BtnLogin_Click;
-            cardLayout.Controls.Add(_btnLogin, 0, 7);
+            cardLayout.Controls.Add(_btnLogin, 0, 8);
             SetRoundedRegion(_btnLogin, 10);
 
             _lnkForgotPassword = new LinkLabel
@@ -390,11 +433,7 @@ namespace BookingClient
                     f.ShowDialog(this);
                 }
             };
-            cardLayout.Controls.Add(_lnkForgotPassword, 0, 8);
-
-            // Control phụ trợ cho logic (không cho user chỉnh IP ở UI)
-            _txtServerIp = new TextBox { Visible = false, Text = "127.0.0.1" };
-            Controls.Add(_txtServerIp);
+            cardLayout.Controls.Add(_lnkForgotPassword, 0, 9);
 
             // Bắt buộc phải Check connect trước khi login
             _btnLogin.Enabled = false;
@@ -583,6 +622,49 @@ namespace BookingClient
 
             try
             {
+                var manualIp = (_txtServerIp?.Text ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(manualIp))
+                {
+                    if (!IPAddress.TryParse(manualIp, out var ipAddr))
+                    {
+                        if (_lblConnectStatus != null)
+                        {
+                            _lblConnectStatus.Text = "Invalid";
+                            _lblConnectStatus.ForeColor = Color.White;
+                        }
+                        if (_pnlConnectDot != null)
+                        {
+                            _pnlConnectDot.BackColor = Color.Red;
+                        }
+                        _lblError.Text = "IPv4 không hợp lệ. Ví dụ: 192.168.1.10";
+                        return;
+                    }
+
+                    using (var tcp = new TcpClient())
+                    {
+                        var connectTask = tcp.ConnectAsync(ipAddr, SERVER_TCP_PORT);
+                        var finished = await Task.WhenAny(connectTask, Task.Delay(2000));
+                        if (finished != connectTask)
+                            throw new TimeoutException("Timeout");
+                    }
+
+                    _detectedServerIp = manualIp;
+
+                    if (_lblConnectStatus != null)
+                    {
+                        _lblConnectStatus.Text = "OK";
+                        _lblConnectStatus.ForeColor = Color.White;
+                    }
+                    if (_pnlConnectDot != null)
+                    {
+                        _pnlConnectDot.BackColor = Color.LimeGreen;
+                    }
+
+                    _isConnectedOk = true;
+                    _btnLogin.Enabled = true;
+                    return;
+                }
+
                 using (var udp = new UdpClient())
                 {
                     udp.EnableBroadcast = true;
